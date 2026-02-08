@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import json
 import traceback
+from duckduckgo_search import DDGS
 
 # --- Page Configuration ---
 st.set_page_config(page_title="PAUSE - Risk Manager", page_icon="⏸️", layout="wide")
@@ -26,14 +27,14 @@ st.markdown("""
         box-shadow: 0 4px 15px rgba(0,0,0,0.5);
     }
     .company-ticker {
-        font-size: 80px !important;
+        font-size: 60px !important; 
         font-weight: 900;
         color: #00FF99;
         margin: 0;
         line-height: 1.0;
     }
     .company-name {
-        font-size: 40px !important;
+        font-size: 30px !important;
         color: #DDDDDD;
         margin: 10px 0 0 0;
         font-weight: 500;
@@ -59,6 +60,7 @@ st.markdown("""
         border: 2px solid rgba(255,255,255,0.1);
     }
     
+    /* 버튼 스타일 */
     .stButton>button {
         background-color: #00FF99;
         color: black;
@@ -68,6 +70,7 @@ st.markdown("""
         font-size: 20px;
         width: 100%;
         border: none;
+        margin-top: 10px;
     }
     .stButton>button:hover {
         background-color: #00CC7A;
@@ -76,12 +79,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- Sidebar ---
-st.sidebar.title("⏸️ PAUSE")
-st.sidebar.markdown("### Pause Before You Trade")
-st.sidebar.info("💡 **Note:** PAUSE is optimized for **1-2 Week Swing Traders**.") 
-
-# API Key Handling
+# --- Sidebar (API 키 설정) ---
+st.sidebar.title("⚙️ Settings")
 if "OPENAI_API_KEY" in st.secrets:
     api_key = st.secrets["OPENAI_API_KEY"]
     st.sidebar.success("✅ API Key Loaded!")
@@ -89,16 +88,53 @@ else:
     api_key = st.sidebar.text_input("OpenAI API Key", type="password")
 
 if not api_key:
-    st.sidebar.warning("⬅️ Please enter API Key to start")
+    st.warning("⬅️ Please enter API Key in the Sidebar to start")
     st.stop()
 
-# --- User Inputs ---
-risk_tolerance = st.sidebar.selectbox("Risk Tolerance", ["Conservative", "Moderate", "Aggressive"])
-ticker_symbol = st.sidebar.text_input("Ticker Symbol", value="NVDA").upper()
-quantity = st.sidebar.number_input("Quantity (Shares)", min_value=1, value=100)
-analyze_button = st.sidebar.button("🔍 Analyze Trade")
+# --- Helper Functions (캐싱 적용으로 속도 향상) ---
 
-# --- Helper Function ---
+@st.cache_data(ttl=600) # 10분 동안 가격 저장 (수량 바꿀 때마다 로딩 안 걸리게)
+def get_live_price(ticker):
+    """단순 현재가 조회용 (빠른 속도)"""
+    try:
+        stock = yf.Ticker(ticker)
+        # fast_info가 빠르지만 가끔 에러나서 history 1일치로 대체
+        hist = stock.history(period='1d')
+        if not hist.empty:
+            return hist['Close'].iloc[-1]
+        return 0.0
+    except:
+        return 0.0
+
+def fetch_news(ticker):
+    try:
+        ddgs = DDGS()
+        news_summary = []
+        try:
+            results = list(ddgs.news(keywords=f"{ticker} stock", region="wt-wt", safesearch="off", max_results=3))
+        except:
+            results = []
+            
+        if not results:
+            try:
+                results = list(ddgs.text(keywords=f"{ticker} stock news", region="wt-wt", safesearch="off", max_results=3))
+            except:
+                results = []
+
+        if results:
+            for r in results:
+                title = r.get('title', 'No Title')
+                body = r.get('body', r.get('snippet', '')) 
+                url = r.get('url', '#')
+                news_summary.append(f"- [{title}]({url}): {body[:150]}...")
+            return "\n".join(news_summary)
+        else:
+            google_url = f"https://www.google.com/search?q={ticker}+stock+news&tbm=nws"
+            return f"No direct news found. [Click to search Google News]({google_url})"
+            
+    except Exception as e:
+        return f"News search error: {str(e)}"
+
 def fetch_market_data(ticker):
     try:
         stock = yf.Ticker(ticker)
@@ -146,16 +182,49 @@ def calculate_hindsight(df, qty, current_price):
     except:
         return 0, 0
 
+# --- Main Page Inputs ---
+
+st.title("⏸️ PAUSE")
+st.markdown("### Pause Before You Trade")
+st.info("💡 **Note:** PAUSE is optimized for **1-2 Week Swing Traders**.") 
+
+# Risk Tolerance (맨 위)
+risk_tolerance = st.selectbox("Risk Tolerance", ["Conservative", "Moderate", "Aggressive"])
+
+# 입력창 3단 분리 (티커 | 수량 | 총금액)
+c1, c2, c3 = st.columns(3)
+
+with c1:
+    ticker_symbol = st.text_input("Ticker Symbol", value="NVDA").upper()
+
+with c2:
+    quantity = st.number_input("Quantity (Shares)", min_value=1, value=100)
+
+with c3:
+    # 실시간 계산 로직
+    if ticker_symbol:
+        live_price = get_live_price(ticker_symbol)
+        total_est = live_price * quantity
+        # 수정 불가능한 박스(disabled=True)로 보여줌
+        st.text_input("Est. Amount ($)", value=f"${total_est:,.2f}", disabled=True)
+    else:
+        st.text_input("Est. Amount ($)", value="$0.00", disabled=True)
+
+# Analyze Button
+analyze_button = st.button("🔍 Analyze Trade", use_container_width=True)
+
 # --- Main Logic ---
 if analyze_button:
-    with st.spinner("Wait... Calculating your risk..."):
+    with st.spinner("Wait... Reading News & Charts..."):
         try:
             # 1. Fetch Data
             data = fetch_market_data(ticker_symbol)
-            
             if not data['success']:
                 st.error(f"Data Error: {data['error']}")
                 st.stop()
+
+            # News
+            recent_news = fetch_news(ticker_symbol)
 
             df = data['history']
             curr_price = data['current_price']
@@ -170,7 +239,7 @@ if analyze_button:
             rsi = df.iloc[-1].get('RSI', 50)
             past_price, hindsight_pnl = calculate_hindsight(df, quantity, curr_price)
             
-            # 3. AI Prompt (대폭 강화됨!)
+            # 3. AI Prompt
             prompt = f"""
             You are a Risk Manager for a swing trader.
             Your Risk Attitude is: **{risk_tolerance.upper()}**.
@@ -184,30 +253,29 @@ if analyze_button:
             - RSI: {rsi:.2f}
             - Next Earnings: {data['earnings']}
             
+            LATEST NEWS HEADLINES:
+            {recent_news}
+            
             ### STRICT RULES FOR {risk_tolerance.upper()} MODE:
 
             1. **CONSERVATIVE (The "Coward" Mode):**
-               - Your #1 goal is CAPITAL PRESERVATION.
-               - **IF RSI > 60:** You MUST say **WAIT**. (Too expensive).
-               - **IF RSI < 40:** You might say GO.
-               - If the price is near an All-Time High, say WAIT.
-               - **Verdict Rule:** Unless the setup is PERFECT (Cheap + Uptrend), default to WAIT or STOP.
+               - **IF RSI > 60:** Say WAIT.
+               - **IF BAD NEWS:** Even if chart is good, say WAIT.
+               - **Verdict Rule:** Unless PERFECT (Cheap + Uptrend + No Bad News), default to WAIT/STOP.
 
             2. **MODERATE (The "Rational" Mode):**
-               - Balance risk and reward.
                - **IF RSI > 70:** Say WAIT.
-               - **IF RSI 40-60:** Check the trend. If Up, GO.
+               - **IF RSI 40-60:** Check trend & news. If good, GO.
 
             3. **AGGRESSIVE (The "Bull" Mode):**
-               - Your #1 goal is MOMENTUM.
-               - **IF RSI > 70:** It's okay! It means strong momentum. Say **GO**.
-               - Only say STOP if RSI > 85 or trend is clearly broken.
+               - **IF RSI > 70:** It's okay (Momentum). Say **GO**.
+               - Only say STOP if RSI > 85 or disastrous news.
 
             TASK:
-            1. Decide VERDICT (GO / STOP / WAIT) based strictly on the rules above.
+            1. Decide VERDICT (GO / STOP / WAIT).
             2. Set Stop Loss & Target Price.
             3. Calculate Potential Loss.
-            4. Explain 'Why' simply.
+            4. Explain 'Why' using Technicals AND News if relevant.
 
             OUTPUT JSON (No markdown):
             {{
@@ -217,7 +285,7 @@ if analyze_button:
                 "target_price": 000.00,
                 "potential_loss_amount": 000.00,
                 "reality_check_message": "Short warning sentence.",
-                "reasoning_simple": ["Point 1", "Point 2", "Point 3"]
+                "reasoning_simple": ["Point 1 (Tech)", "Point 2 (News)", "Point 3"]
             }}
             """
             
@@ -236,13 +304,11 @@ if analyze_button:
             try:
                 ai_result = json.loads(cleaned_content)
             except json.JSONDecodeError:
-                st.error("AI returned invalid JSON. Here is the raw text:")
-                st.code(raw_content)
+                st.error("AI returned invalid JSON.")
                 st.stop()
             
             # 6. UI Rendering
             
-            # Header
             st.markdown(f"""
             <div class="company-header">
                 <p class="company-ticker">{ticker_symbol}</p>
@@ -250,7 +316,6 @@ if analyze_button:
             </div>
             """, unsafe_allow_html=True)
 
-            # Verdict
             verdict = ai_result.get('verdict', 'WAIT')
             risk_color = ai_result.get('risk_color', 'orange')
             color_map = {"GO": "#00CC7A", "STOP": "#FF4B4B", "WAIT": "#FFA500"}
@@ -263,7 +328,6 @@ if analyze_button:
             </div>
             """, unsafe_allow_html=True)
             
-            # Reality Check
             loss_amt = ai_result.get('potential_loss_amount', 0)
             reality_msg = ai_result.get('reality_check_message', '')
             
@@ -274,18 +338,16 @@ if analyze_button:
             </div>
             """, unsafe_allow_html=True)
             
-            # Metrics
             c1, c2, c3 = st.columns(3)
             with c1:
                 st.metric("Current Price", f"${curr_price:.2f}")
             with c2:
-                st.metric("Suggested Stop Loss", f"${ai_result.get('stop_loss_price', 0):.2f}", help="Short-term support (1-2 weeks)")
+                st.metric("Suggested Stop Loss", f"${ai_result.get('stop_loss_price', 0):.2f}", help="Short-term support")
             with c3:
-                st.metric("Suggested Target Price", f"${ai_result.get('target_price', 0):.2f}", help="Short-term resistance (1-2 weeks)")
+                st.metric("Suggested Target Price", f"${ai_result.get('target_price', 0):.2f}", help="Short-term resistance")
             
             st.divider()
 
-            # Hindsight
             if hindsight_pnl >= 0:
                 h_bg = "rgba(0, 204, 122, 0.2)"
                 h_border = "#00CC7A"
@@ -306,7 +368,6 @@ if analyze_button:
             </div>
             """, unsafe_allow_html=True)
 
-            # Why
             st.subheader("🧐 Why?")
             reasons = ai_result.get('reasoning_simple', [])
             if isinstance(reasons, list):
@@ -315,10 +376,10 @@ if analyze_button:
             else:
                 st.write(reasons)
             
-            with st.expander("Show Earnings Info"):
+            with st.expander("Show Latest News (DuckDuckGo)"):
+                st.markdown(recent_news)
                 st.write(f"**Next Earnings Date:** {data['earnings']}")
 
-            # Chart
             st.markdown("---")
             st.subheader(f"📉 {ticker_symbol} Price Chart (Last 30 Days)")
             chart_df = df.tail(30) 
