@@ -12,36 +12,47 @@ from duckduckgo_search import DDGS
 # --- Page Configuration ---
 st.set_page_config(page_title="PAUSE - Risk Manager", page_icon="⏸️", layout="wide")
 
-# --- Custom CSS ---
+# --- Custom CSS (여기가 핵심! 상단 여백 삭제) ---
 st.markdown("""
     <style>
+    /* 🔥 [핵심] 모바일 상단 빈 공간 삭제 🔥 */
+    .block-container {
+        padding-top: 1rem !important; /* 기본값이 6rem인데 1rem으로 확 줄임 */
+        padding-bottom: 5rem !important;
+    }
+    /* 헤더(햄버거 메뉴 라인) 장식 줄이기 */
+    header[data-testid="stHeader"] {
+        height: 2rem !important; /* 헤더 높이도 줄임 */
+    }
+    
+    /* 기존 스타일 유지 */
     .big-font { font-size: 24px !important; font-weight: bold; }
     
     .company-header {
-        padding: 30px;
+        padding: 20px; /* 모바일 위해 패딩 약간 줄임 */
         background-color: #1E1E1E;
         border-radius: 20px;
         text-align: center;
-        margin-bottom: 25px;
+        margin-bottom: 20px;
         border: 1px solid #333;
         box-shadow: 0 4px 15px rgba(0,0,0,0.5);
     }
     .company-ticker {
-        font-size: 60px !important; 
+        font-size: 50px !important; /* 모바일 최적화: 60 -> 50 */
         font-weight: 900;
         color: #00FF99;
         margin: 0;
         line-height: 1.0;
     }
     .company-name {
-        font-size: 30px !important;
+        font-size: 24px !important; /* 모바일 최적화: 30 -> 24 */
         color: #DDDDDD;
-        margin: 10px 0 0 0;
+        margin: 5px 0 0 0;
         font-weight: 500;
     }
 
     .verdict-box {
-        padding: 30px;
+        padding: 25px;
         border-radius: 15px;
         text-align: center;
         margin-bottom: 20px;
@@ -49,18 +60,17 @@ st.markdown("""
     }
     
     .hindsight-box {
-        padding: 25px;
+        padding: 20px;
         border-radius: 12px;
         text-align: center;
         margin: 20px 0;
-        font-size: 22px;
+        font-size: 18px;
         font-weight: bold;
         line-height: 1.5;
         box-shadow: 0 4px 10px rgba(0,0,0,0.2);
         border: 2px solid rgba(255,255,255,0.1);
     }
     
-    /* 버튼 스타일 */
     .stButton>button {
         background-color: #00FF99;
         color: black;
@@ -79,7 +89,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- Sidebar (API 키 설정) ---
+# --- Sidebar ---
 st.sidebar.title("⚙️ Settings")
 if "OPENAI_API_KEY" in st.secrets:
     api_key = st.secrets["OPENAI_API_KEY"]
@@ -91,14 +101,12 @@ if not api_key:
     st.warning("⬅️ Please enter API Key in the Sidebar to start")
     st.stop()
 
-# --- Helper Functions (캐싱 적용으로 속도 향상) ---
+# --- Helper Functions ---
 
-@st.cache_data(ttl=600) # 10분 동안 가격 저장 (수량 바꿀 때마다 로딩 안 걸리게)
+@st.cache_data(ttl=600) 
 def get_live_price(ticker):
-    """단순 현재가 조회용 (빠른 속도)"""
     try:
         stock = yf.Ticker(ticker)
-        # fast_info가 빠르지만 가끔 에러나서 history 1일치로 대체
         hist = stock.history(period='1d')
         if not hist.empty:
             return hist['Close'].iloc[-1]
@@ -191,7 +199,7 @@ st.info("💡 **Note:** PAUSE is optimized for **1-2 Week Swing Traders**.")
 # Risk Tolerance (맨 위)
 risk_tolerance = st.selectbox("Risk Tolerance", ["Conservative", "Moderate", "Aggressive"])
 
-# 입력창 3단 분리 (티커 | 수량 | 총금액)
+# 입력창 3단 분리
 c1, c2, c3 = st.columns(3)
 
 with c1:
@@ -201,11 +209,9 @@ with c2:
     quantity = st.number_input("Quantity (Shares)", min_value=1, value=100)
 
 with c3:
-    # 실시간 계산 로직
     if ticker_symbol:
         live_price = get_live_price(ticker_symbol)
         total_est = live_price * quantity
-        # 수정 불가능한 박스(disabled=True)로 보여줌
         st.text_input("Est. Amount ($)", value=f"${total_est:,.2f}", disabled=True)
     else:
         st.text_input("Est. Amount ($)", value="$0.00", disabled=True)
