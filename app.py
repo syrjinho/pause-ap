@@ -12,24 +12,22 @@ from duckduckgo_search import DDGS
 # --- Page Configuration ---
 st.set_page_config(page_title="PAUSE - Risk Manager", page_icon="⏸️", layout="wide")
 
-# --- Custom CSS (여기가 핵심! 상단 여백 삭제) ---
+# --- Custom CSS (모바일 상단 여백 제거 포함) ---
 st.markdown("""
     <style>
     /* 🔥 [핵심] 모바일 상단 빈 공간 삭제 🔥 */
     .block-container {
-        padding-top: 1rem !important; /* 기본값이 6rem인데 1rem으로 확 줄임 */
+        padding-top: 1rem !important;
         padding-bottom: 5rem !important;
     }
-    /* 헤더(햄버거 메뉴 라인) 장식 줄이기 */
     header[data-testid="stHeader"] {
-        height: 2rem !important; /* 헤더 높이도 줄임 */
+        height: 2rem !important;
     }
     
-    /* 기존 스타일 유지 */
     .big-font { font-size: 24px !important; font-weight: bold; }
     
     .company-header {
-        padding: 20px; /* 모바일 위해 패딩 약간 줄임 */
+        padding: 20px;
         background-color: #1E1E1E;
         border-radius: 20px;
         text-align: center;
@@ -38,14 +36,14 @@ st.markdown("""
         box-shadow: 0 4px 15px rgba(0,0,0,0.5);
     }
     .company-ticker {
-        font-size: 50px !important; /* 모바일 최적화: 60 -> 50 */
+        font-size: 50px !important;
         font-weight: 900;
         color: #00FF99;
         margin: 0;
         line-height: 1.0;
     }
     .company-name {
-        font-size: 24px !important; /* 모바일 최적화: 30 -> 24 */
+        font-size: 24px !important;
         color: #DDDDDD;
         margin: 5px 0 0 0;
         font-weight: 500;
@@ -196,8 +194,12 @@ st.title("⏸️ PAUSE")
 st.markdown("### Pause Before You Trade")
 st.info("💡 **Note:** PAUSE is optimized for **1-2 Week Swing Traders**.") 
 
-# Risk Tolerance (맨 위)
-risk_tolerance = st.selectbox("Risk Tolerance", ["Conservative", "Moderate", "Aggressive"])
+# Risk Tolerance (index=1로 설정하여 Moderate를 기본값으로!)
+risk_tolerance = st.selectbox(
+    "Risk Tolerance", 
+    ["Conservative", "Moderate", "Aggressive"], 
+    index=1
+)
 
 # 입력창 3단 분리
 c1, c2, c3 = st.columns(3)
