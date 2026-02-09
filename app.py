@@ -1,428 +1,395 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import pandas_ta as ta
 from openai import OpenAI
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
 import json
 import time
 from duckduckgo_search import DDGS
+from datetime import datetime
 
 # ---------------------------------------------------------
 # 1. 페이지 설정
 # ---------------------------------------------------------
-st.set_page_config(
-    page_title="PAUSE - The Art of Not Losing Money",
-    page_icon="⏸️",
-    layout="wide"
-)
+st.set_page_config(page_title="PAUSE", page_icon="⏸️", layout="wide")
 
 # ---------------------------------------------------------
-# 2. 스타일(CSS) 설정
+# 2. 스타일 설정 (CSS)
 # ---------------------------------------------------------
 st.markdown("""
-    <style>
-    .block-container { padding-top: 1rem !important; padding-bottom: 5rem !important; }
-    header[data-testid="stHeader"] { height: 2rem !important; }
-    .dojo-box { 
-        background-color: #262730; 
-        border-radius: 10px; 
-        padding: 15px; 
-        margin-bottom: 20px; 
-        border: 1px solid #444; 
-        text-align: center; 
-    }
-    .belt-icon { font-size: 40px; margin-bottom: 5px; }
-    .belt-title { color: #FFFFFF; font-weight: bold; font-size: 18px; }
-    .company-header { 
-        padding: 20px; 
-        background-color: #1E1E1E; 
-        border-radius: 20px; 
-        text-align: center; 
-        margin-bottom: 20px; 
-        border: 1px solid #333; 
-    }
-    .company-ticker { 
-        font-size: 50px !important; 
-        font-weight: 900; 
-        color: #00FF99; 
-        margin: 0; 
-        line-height: 1.0; 
-    }
-    .company-name { 
-        font-size: 24px !important; 
-        color: #DDDDDD; 
-        margin: 5px 0 0 0; 
-        font-weight: 500; 
-    }
-    .verdict-box { 
-        padding: 25px; 
-        border-radius: 15px; 
-        text-align: center; 
-        margin-bottom: 20px; 
-    }
-    .stButton>button { 
-        background-color: #00FF99; 
-        color: black; 
-        font-weight: bold; 
-        border-radius: 10px; 
-        height: 50px; 
-        font-size: 20px; 
-        width: 100%; 
-        border: none; 
-        margin-top: 10px; 
-    }
-    </style>
+<style>
+.block-container { padding-top: 1rem; padding-bottom: 5rem; }
+section[data-testid="stSidebar"] .block-container { padding-top: 1rem; }
+.dojo-box { 
+    background-color: #262730; 
+    border-radius: 10px; 
+    padding: 15px; 
+    margin-bottom: 20px; 
+    border: 1px solid #444; 
+    text-align: center; 
+}
+.company-header { 
+    padding: 20px; 
+    background-color: #1E1E1E; 
+    border-radius: 20px; 
+    text-align: center; 
+    margin-bottom: 20px; 
+    border: 1px solid #333; 
+}
+.company-ticker { 
+    font-size: 50px !important; 
+    font-weight: 900; 
+    color: #00FF99; 
+    margin: 0; 
+    line-height: 1.0; 
+}
+.company-name { 
+    font-size: 24px !important; 
+    color: #DDDDDD; 
+    margin: 5px 0 0 0; 
+    font-weight: 500; 
+}
+.verdict-box { 
+    padding: 25px; 
+    border-radius: 15px; 
+    text-align: center; 
+    margin-bottom: 20px; 
+}
+.stButton>button { 
+    background-color: #00FF99; 
+    color: black; 
+    font-weight: bold; 
+    border-radius: 10px; 
+    height: 50px; 
+    font-size: 20px; 
+    width: 100%; 
+}
+</style>
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 3. 세션 상태 초기화
+# 3. 세션 및 콜백 함수
 # ---------------------------------------------------------
-if 'xp' not in st.session_state:
-    st.session_state.xp = 0
-if 'total_saved' not in st.session_state:
-    st.session_state.total_saved = 0
-if 'analyzed' not in st.session_state:
-    st.session_state.analyzed = False 
+if 'xp' not in st.session_state: st.session_state.xp = 0
+if 'total_saved' not in st.session_state: st.session_state.total_saved = 0
+if 'analyzed' not in st.session_state: st.session_state.analyzed = False
+if 'msg' not in st.session_state: st.session_state.msg = ""
+
+def cb_analyze():
+    st.session_state.xp += 10
+    st.session_state.analyzed = True
+    st.session_state.msg = ""
+
+def cb_pause(saved_val):
+    st.session_state.xp += 50
+    st.session_state.total_saved += saved_val
+    st.session_state.analyzed = False
+    st.session_state.msg = f"🧘 Excellent! Saved risk: ${saved_val:,.0f}"
 
 # ---------------------------------------------------------
-# 4. 벨트 시스템 데이터
+# 4. 벨트 시스템
 # ---------------------------------------------------------
 BELTS = [
-    {"limit": 100, "name": "Impulsive Novice", "color": "⚪", "msg": "Welcome to the Dojo."},
-    {"limit": 300, "name": "Aware Observer", "color": "🟡", "msg": "You are starting to see."},
-    {"limit": 600, "name": "Disciplined Trader", "color": "🔵", "msg": "Control is your weapon."},
-    {"limit": 1000, "name": "Risk Manager", "color": "🟤", "msg": "You protect your capital."},
-    {"limit": 999999, "name": "Grandmaster of Pause", "color": "⚫", "msg": "You have mastered the art."}
+    {"limit": 100, "name": "Novice", "color": "⚪"},
+    {"limit": 300, "name": "Observer", "color": "🟡"},
+    {"limit": 600, "name": "Trader", "color": "🔵"},
+    {"limit": 1000, "name": "Risk Manager", "color": "🟤"},
+    {"limit": 999999, "name": "Grandmaster", "color": "⚫"}
 ]
-
-def get_current_belt(xp):
-    for belt in BELTS:
-        if xp < belt["limit"]:
-            return belt
+def get_belt(xp):
+    for b in BELTS:
+        if xp < b["limit"]: return b
     return BELTS[-1]
 
 # ---------------------------------------------------------
-# 5. 사이드바 구성 (레벨 표시)
+# 5. 사이드바
 # ---------------------------------------------------------
-st.sidebar.title("⏸️ PAUSE")
-st.sidebar.markdown("### The Art of Not Losing Money")
+st.sidebar.markdown("""
+<h1 style='margin-bottom: 0px;'>⏸️ PAUSE</h1>
+<p style='font-size: 14px; color: #888; margin-top: 0px;'>Welcome to Dojo</p>
+""", unsafe_allow_html=True)
 
-current_belt = get_current_belt(st.session_state.xp)
+belt = get_belt(st.session_state.xp)
+limit = max(belt['limit'], 1)
 
-st.sidebar.markdown("---")
-
-# 안전한 문자열 포맷팅
-belt_color = current_belt['color']
-belt_name = current_belt['name']
-belt_msg = current_belt['msg']
-belt_limit = current_belt['limit']
-curr_xp = st.session_state.xp
-
-dojo_html = f"""
+st.sidebar.markdown(f"""
 <div class="dojo-box">
-    <div class="belt-icon">{belt_color}</div>
-    <div class="belt-title">{belt_name}</div>
-    <div style="color: #888; font-size: 12px; margin-top: 5px;">{belt_msg}</div>
-    <div style="margin-top: 10px; font-weight: bold; color: #00FF99;">XP: {curr_xp} / {belt_limit}</div>
+    <div style="font-size:40px;">{belt['color']}</div>
+    <div style="font-weight:bold; color:white;">{belt['name']}</div>
+    <div style="color:#00FF99; margin-top:10px;">XP: {st.session_state.xp} / {limit}</div>
 </div>
-"""
-st.sidebar.markdown(dojo_html, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
+st.sidebar.progress(min(st.session_state.xp / limit, 1.0))
 
-# 프로그래스 바
-limit_val = max(belt_limit, 1)
-progress_val = min(curr_xp / limit_val, 1.0)
-st.sidebar.progress(progress_val)
+st.sidebar.markdown("""
+<div style="background-color: #333; padding: 15px; border-radius: 10px; font-size: 13px; color: #eee; margin-top: 10px; border: 1px solid #555;">
+    <strong style="color: #00FF99; font-size: 14px;">Road to Grandmaster 🥋</strong>
+    <ul style="padding-left: 15px; margin-top: 8px; line-height: 1.6;">
+        <li>🔍 <b>+10 XP</b>: Analyze before you act. (No FOMO!)</li>
+        <li>✋ <b>+50 XP</b>: Choose to PAUSE. Patience is your strongest weapon.</li>
+    </ul>
+</div>
+""", unsafe_allow_html=True)
 
 st.sidebar.markdown("---")
-st.sidebar.info("💡 **Tip:** Analyze (+10 XP) and Pause (+50 XP) to level up!")
 
-# API Key 입력
 if "OPENAI_API_KEY" in st.secrets:
     api_key = st.secrets["OPENAI_API_KEY"]
 else:
     api_key = st.sidebar.text_input("OpenAI API Key", type="password")
 
 if not api_key:
-    st.warning("⬅️ Please enter API Key in the Sidebar to start")
+    st.warning("Enter API Key")
     st.stop()
 
 # ---------------------------------------------------------
-# 6. 헬퍼 함수들
+# 6. 데이터 함수
 # ---------------------------------------------------------
-@st.cache_data(ttl=600) 
-def get_live_price(ticker):
-    try:
-        stock = yf.Ticker(ticker)
-        hist = stock.history(period='1d')
-        if not hist.empty:
-            return hist['Close'].iloc[-1]
-        return 0.0
-    except:
-        return 0.0
+@st.cache_data(ttl=600)
+def get_price(ticker):
+    try: 
+        return yf.Ticker(ticker).history(period='5d')['Close'].iloc[-1]
+    except: return 0.0
 
-def fetch_news(ticker):
+def get_news(ticker):
     try:
         ddgs = DDGS()
-        results = []
-        try: 
-            results = list(ddgs.news(keywords=f"{ticker} stock", region="wt-wt", safesearch="off", max_results=3))
-        except: 
-            results = []
-        
-        if not results:
-            try: 
-                results = list(ddgs.text(keywords=f"{ticker} stock news", region="wt-wt", safesearch="off", max_results=3))
-            except: 
-                results = []
-                
-        if results:
-            summary = []
-            for r in results:
-                t = r.get('title', 'No Title')
-                u = r.get('url', '#')
-                summary.append(f"- [{t}]({u})")
-            return "\n".join(summary)
-        else: 
-            return "No recent news found."
-    except Exception as e: 
-        return f"News search error: {str(e)}"
+        r = list(ddgs.news(keywords=f"{ticker} stock", max_results=3))
+        if not r: return []
+        return [{'title': x['title'], 'url': x['url']} for x in r]
+    except: return []
 
-def fetch_market_data(ticker):
+def get_data(ticker):
     try:
-        stock = yf.Ticker(ticker)
-        hist = stock.history(period='6mo', interval='1d')
-        if hist.empty: 
-            return {'success': False, 'error': 'No data'}
+        t = yf.Ticker(ticker)
+        h = t.history(period='6mo')
+        if h.empty: return None
         
-        try: c_name = stock.info.get('longName', ticker)
-        except: c_name = ticker 
-        
-        e_date = "Unknown"
+        # [수정됨] 어닝 데이트 추출 로직 강화
+        earnings = "N/A"
         try:
-            cal = stock.calendar
-            if isinstance(cal, dict) and 'Earnings Date' in cal:
-                 dates = cal['Earnings Date']
-                 if dates: e_date = str(dates[0])
-            elif not isinstance(cal, dict) and not cal.empty:
-                e_date = cal.iloc[0][0].strftime('%Y-%m-%d')
+            cal = t.calendar
+            if cal is not None:
+                # 딕셔너리인 경우 (최신 버전 yfinance)
+                if isinstance(cal, dict):
+                    if 'Earnings Date' in cal:
+                        dates = cal['Earnings Date']
+                        if dates: earnings = str(dates[0])
+                    elif 'Earnings High' in cal: # 대체 키 확인
+                        dates = cal['Earnings High']
+                        if dates: earnings = str(dates[0])
+                # 데이터프레임인 경우 (구 버전)
+                elif not cal.empty:
+                    # 첫 번째 행, 첫 번째 열 값 가져오기
+                    val = cal.iloc[0][0]
+                    earnings = str(val.date()) if hasattr(val, 'date') else str(val)
         except:
-            pass
-            
-        return {
-            'success': True, 
-            'history': hist, 
-            'current_price': hist.iloc[-1]['Close'], 
-            'earnings': e_date, 
-            'company_name': c_name
-        }
-    except Exception as e: 
-        return {'success': False, 'error': str(e)}
+            earnings = "N/A"
 
-def calculate_hindsight(df, qty, current_price):
-    if df is None: return 0.0, 0.0
-    if len(df) < 6: return 0.0, 0.0
-    
-    try:
-        past_price = df['Close'].iloc[-6] 
-        diff = current_price - past_price
-        pnl = diff * qty
-        return past_price, pnl
-    except:
-        return 0.0, 0.0
+        return {
+            'hist': h, 
+            'price': h['Close'].iloc[-1], 
+            'name': t.info.get('longName', ticker),
+            'earnings': earnings
+        }
+    except: return None
 
 # ---------------------------------------------------------
-# 7. 메인 화면 구성
+# 7. 메인 화면
 # ---------------------------------------------------------
 st.title("⏸️ PAUSE")
 
-# 입력창
-risk_tolerance = st.selectbox("Risk Tolerance", ["Conservative", "Moderate", "Aggressive"], index=1)
+if st.session_state.msg:
+    st.success(st.session_state.msg)
+    st.toast("XP Gained!", icon="✨")
+    st.session_state.msg = ""
 
-col1, col2, col3 = st.columns(3)
-with col1: 
-    ticker_symbol = st.text_input("Ticker Symbol", value="NVDA").upper()
-with col2: 
-    quantity = st.number_input("Quantity (Shares)", min_value=1, value=100)
-with col3:
-    if ticker_symbol:
-        lp = get_live_price(ticker_symbol)
-        total_val = lp * quantity
-        st.text_input("Est. Amount ($)", value=f"${total_val:,.2f}", disabled=True)
-    else:
-        st.text_input("Est. Amount ($)", value="$0.00", disabled=True)
+risk = st.selectbox("Risk", ["Conservative", "Moderate", "Aggressive"], index=1)
 
-# 🔥 [핵심 수정] Analyze 버튼 로직
-# 버튼을 누르면 점수를 올리고, '즉시' rerunning 해서 사이드바 숫자를 업데이트함
-if st.button("🔍 Analyze Trade (+10 XP)", use_container_width=True):
-    st.session_state.xp += 10
-    st.session_state.analyzed = True
-    st.rerun()  # 이 코드가 있어야 버튼 누르자마자 10점이 올라간 화면이 보입니다!
+c1, c2, c3 = st.columns(3)
+with c1: sym = st.text_input("Ticker", "NVDA").upper()
+with c2: qty = st.number_input("Qty", 1, value=100)
+with c3:
+    curr = get_price(sym) if sym else 0
+    st.text_input("Est. $", f"${curr*qty:,.0f}", disabled=True)
+
+# 버튼 1: Analyze
+st.button("🔍 Analyze (+10 XP)", use_container_width=True, on_click=cb_analyze)
 
 # ---------------------------------------------------------
-# 8. 분석 로직 실행
+# 8. 분석 로직
 # ---------------------------------------------------------
-if st.session_state.analyzed: 
-    
-    with st.spinner("Consulting the Master..."):
+if st.session_state.analyzed:
+    with st.spinner("Analyzing..."):
+        d = get_data(sym)
+        if not d:
+            st.error("Error fetching data. Check ticker symbol.")
+            st.stop()
+            
+        df = d['hist']
+        curr_price = d['price']
+        
+        # [추가됨] 회사 정보 헤더 (분석 결과 맨 위에 표시)
+        st.markdown(f"""
+        <div class="company-header">
+            <p class="company-ticker">{sym}</p>
+            <p class="company-name">{d['name']}</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # --- 지표 계산 (수동) ---
         try:
-            # 데이터 가져오기
-            m_data = fetch_market_data(ticker_symbol)
-            if not m_data['success']: 
-                st.error("Ticker Error: Data not found")
-                st.stop()
+            # RSI
+            delta = df['Close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+            rs = gain / loss
+            df['RSI'] = 100 - (100 / (1 + rs))
             
-            news_txt = fetch_news(ticker_symbol)
-            df = m_data['history']
-            curr_p = m_data['current_price']
-            comp_n = m_data['company_name']
+            # BB
+            sma = df['Close'].rolling(20).mean()
+            std = df['Close'].rolling(20).std()
+            df['BBL'] = sma - (2 * std)
+            df['BBU'] = sma + (2 * std)
             
-            # 기술적 지표
-            df['RSI'] = ta.rsi(df['Close'], length=14)
-            bb = ta.bbands(df['Close'], length=20, std=2)
-            if bb is not None:
-                df = pd.concat([df, bb], axis=1)
-                
-            rsi_val = df.iloc[-1].get('RSI', 50)
+            rsi_val = df['RSI'].iloc[-1]
+            if pd.isna(rsi_val): rsi_val = 50
             
-            # 볼린저 밴드 (안전 처리)
-            try:
-                bb_low = df.iloc[-1]['BBL_20_2.0']
-                bb_high = df.iloc[-1]['BBU_20_2.0']
-            except:
-                bb_low = curr_p * 0.95
-                bb_high = curr_p * 1.05
+            bbl_val = df['BBL'].iloc[-1]
+            if pd.isna(bbl_val): bbl_val = curr_price * 0.95
+            
+            bbu_val = df['BBU'].iloc[-1]
+            if pd.isna(bbu_val): bbu_val = curr_price * 1.05
+            
+        except:
+            rsi_val = 50
+            bbl_val = curr_price * 0.95
+            bbu_val = curr_price * 1.05
+        
+        news_items = get_news(sym)
+        news_text = "\n".join([f"- {n['title']}" for n in news_items]) if news_items else "No recent news."
+        
+        # --- AI 프롬프트 ---
+        sys_msg = "You are a helpful assistant. Output valid JSON only."
+        user_msg = f"""
+        Risk Profile: {risk}
+        Ticker: {sym}
+        Current Price: {curr_price:.2f}
+        RSI: {rsi_val:.1f}
+        Bollinger Lower: {bbl_val:.2f}
+        Bollinger Upper: {bbu_val:.2f}
+        News Headlines:
+        {news_text[:500]}
 
-            past_p, hindsight_val = calculate_hindsight(df, quantity, curr_p)
-            
-            # -------------------------------------------------
-            # AI 프롬프트 (안전하게 나누어 작성)
-            # -------------------------------------------------
-            lines = []
-            lines.append(f"You are a strict Risk Manager. Risk Attitude: {risk_tolerance}.")
-            lines.append(f"Ticker: {ticker_symbol}, Price: {curr_p}, RSI: {rsi_val}.")
-            lines.append(f"News: {news_txt[:500]}") 
-            lines.append("Task: Decide VERDICT (GO or WAIT).")
-            lines.append("IMPORTANT: Even if WAIT, provide 'stop_loss_price' and 'target_price'. Do NOT output 0.00.")
-            lines.append("RULES: Conservative(RSI>60->WAIT), Moderate(RSI>65->WAIT), Aggressive(RSI>75->WAIT).")
-            lines.append('OUTPUT JSON: {"verdict": "GO/WAIT", "risk_color": "green/orange", "stop_loss_price": 0.0, "target_price": 0.0, "reasoning_simple": ["Reason 1", "Reason 2"]}')
-            
-            final_prompt = "\n".join(lines)
-            
-            # AI 호출
+        TASK:
+        1. Decide VERDICT (GO or WAIT).
+        2. Set 'stop_loss' and 'target'. 
+           - Stop Loss should be near Support/Lower BB.
+           - Target should be near Resistance/Upper BB.
+           - Never return 0.00.
+        3. Provide 'reasoning' as a list of exactly 3 strings:
+           - 1st string: Technical Analysis (RSI, BB).
+           - 2nd string: News Sentiment Analysis.
+           - 3rd string: Alignment with {risk} Risk Profile.
+
+        STRICT RULES:
+        - Conservative: WAIT if RSI > 60 or bad news.
+        - Moderate: WAIT if RSI > 65.
+        - Aggressive: WAIT if RSI > 75.
+
+        OUTPUT JSON FORMAT:
+        {{
+          "verdict": "GO" or "WAIT",
+          "stop_loss": 123.45,
+          "target": 150.00,
+          "reasoning": [
+            "Technical: ...",
+            "News: ...",
+            "Risk Match: ..."
+          ]
+        }}
+        """
+        
+        try:
             client = OpenAI(api_key=api_key)
-            response = client.chat.completions.create(
+            res = client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
-                    {"role": "system", "content": "You are a helpful assistant that outputs only valid JSON."},
-                    {"role": "user", "content": final_prompt}
+                    {"role": "system", "content": sys_msg},
+                    {"role": "user", "content": user_msg}
                 ],
-                temperature=0.1,
-                response_format={ "type": "json_object" }
+                response_format={"type": "json_object"}
             )
-            
-            raw_content = response.choices[0].message.content
-            ai_result = json.loads(raw_content)
-            
-            # 결과값 보정
-            sl_price = ai_result.get('stop_loss_price', 0.0)
-            tp_price = ai_result.get('target_price', 0.0)
-            
-            if sl_price <= 0: sl_price = bb_low
-            if tp_price <= 0: tp_price = bb_high
-                
-            # -------------------------------------------------
-            # 결과 표시 UI
-            # -------------------------------------------------
-            
-            # 1. 회사명
-            h_html = f"""
-            <div class="company-header">
-                <p class="company-ticker">{ticker_symbol}</p>
-                <p class="company-name">{comp_n}</p>
-            </div>
-            """
-            st.markdown(h_html, unsafe_allow_html=True)
-            
-            # 2. 판결
-            verdict = ai_result.get('verdict', 'WAIT')
-            bg_c = "#FF4B4B"
-            if verdict == "GO": bg_c = "#00CC7A"
-            
-            v_html = f"""
-            <div class="verdict-box" style="background-color: {bg_c};">
-                <h1 style="color: white; font-size: 50px; margin:0;">{verdict}</h1>
-                <h3 style="color: white; margin:0;">DECISION FOR {risk_tolerance.upper()} MODE</h3>
-            </div>
-            """
-            st.markdown(v_html, unsafe_allow_html=True)
-
-            # 3. Pause 버튼 (WAIT일 때만)
-            if verdict == "WAIT":
-                if sl_price > 0 and sl_price < curr_p:
-                    risk_unit = curr_p - sl_price
-                    saved_amt = risk_unit * quantity
-                else:
-                    saved_amt = (curr_p * quantity) * 0.05
-                
-                b_text = f"✋ I decided to PAUSE (Save Risk ${saved_amt:,.0f} & +50 XP)"
-                t_tip = f"Entry: ${curr_p:.2f}, Stop Loss: ${sl_price:.2f}"
-
-                # 🔥 [핵심 수정] Pause 버튼 로직
-                if st.button(b_text, type="primary", use_container_width=True, help=t_tip):
-                    st.session_state.xp += 50
-                    st.session_state.total_saved += saved_amt
-                    st.session_state.analyzed = False 
-                    
-                    st.toast(f"✅ +50 XP Gained! Total XP: {st.session_state.xp}", icon="✨")
-                    st.success(f"🧘 Excellent discipline. You avoided risk of ${saved_amt:,.0f}.")
-                    
-                    time.sleep(2)
-                    st.rerun() # 여기서도 즉시 새로고침해서 점수 반영
-
-            # 4. 수치
-            mc1, mc2, mc3 = st.columns(3)
-            mc1.metric("Current Price", f"${curr_p:.2f}")
-            mc2.metric("Suggested Stop Loss", f"${sl_price:.2f}")
-            mc3.metric("Suggested Target", f"${tp_price:.2f}")
-            
-            st.divider()
-            
-            # 5. 이유
-            st.subheader("🧐 Why?")
-            reasons = ai_result.get('reasoning_simple', [])
-            if isinstance(reasons, list):
-                for r in reasons:
-                    st.markdown(f"- {r}")
-            else:
-                st.write(reasons)
-
-            # 6. 뉴스
-            st.divider()
-            with st.expander("📰 Show Latest News & Earnings", expanded=False):
-                st.markdown(f"**📅 Next Earnings Date:** {m_data['earnings']}")
-                st.markdown("---")
-                st.markdown(news_txt)
-
-            # 7. 차트
-            st.divider()
-            st.subheader("Chart")
-            c_df = df.tail(30)
-            
-            candle_stick = go.Candlestick(
-                x=c_df.index, 
-                open=c_df['Open'], 
-                high=c_df['High'], 
-                low=c_df['Low'], 
-                close=c_df['Close']
-            )
-            fig = go.Figure(data=[candle_stick])
-            fig.update_layout(height=400, margin=dict(l=0,r=0,t=0,b=0))
-            st.plotly_chart(fig, use_container_width=True)
-
+            ai = json.loads(res.choices[0].message.content)
         except Exception as e:
-            st.error("🚨 System Error Occurred")
-            st.error(f"Details: {e}")
-            if 'raw_content' in locals():
-                st.code(raw_content)
+            st.error(f"AI Connection Error: {e}")
+            st.stop()
+            
+        # --- 값 보정 ---
+        final_sl = ai.get('stop_loss', 0.0)
+        final_tp = ai.get('target', 0.0)
+        
+        if final_sl <= 0.1: final_sl = bbl_val
+        if final_tp <= 0.1: final_tp = bbu_val
+        
+        # --- UI 표시 ---
+        verdict = ai.get('verdict', 'WAIT')
+        color = "#00CC7A" if verdict == "GO" else "#FF4B4B"
+        
+        st.markdown(f"""
+        <div class="verdict-box" style="background-color:{color};">
+            <h1 style="color:white; margin:0;">{verdict}</h1>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # 버튼 2: Pause
+        if verdict == "WAIT":
+            saved = (curr_price - final_sl) * qty
+            if saved < 0: saved = curr_price * qty * 0.05
+            
+            st.button(
+                f"✋ I decided to PAUSE (Save ${saved:,.0f} & +50 XP)", 
+                type="primary", 
+                use_container_width=True,
+                on_click=cb_pause,
+                args=(saved,)
+            )
+            
+        # Metrics 표시
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Current Price", f"${curr_price:.2f}")
+        m2.metric("Suggested Stop Loss", f"${final_sl:.2f}")
+        m3.metric("Suggested Target", f"${final_tp:.2f}")
+        
+        st.divider()
+        
+        # Why Section
+        st.subheader("🧐 Why?")
+        reasons = ai.get('reasoning', [])
+        if reasons:
+            for r in reasons:
+                st.markdown(f"- {r}")
+        else:
+            st.write("No reasoning provided.")
+            
+        # News & Earnings
+        st.divider()
+        with st.expander("📰 Recent News & Earnings Date", expanded=True):
+            st.markdown(f"**📅 Next Earnings Date:** {d['earnings']}")
+            st.markdown("---")
+            if news_items:
+                for n in news_items:
+                    st.markdown(f"- [{n['title']}]({n['url']})")
+            else:
+                st.write("No recent news found.")
+            
+        # Chart
+        st.divider()
+        st.subheader("Chart")
+        fig = go.Figure(data=[go.Candlestick(
+            x=df.index,
+            open=df['Open'], high=df['High'],
+            low=df['Low'], close=df['Close']
+        )])
+        fig.update_layout(height=400, margin=dict(l=0,r=0,t=0,b=0))
+        st.plotly_chart(fig, use_container_width=True)
