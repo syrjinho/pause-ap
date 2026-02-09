@@ -122,7 +122,6 @@ st.sidebar.markdown(f"""
 """, unsafe_allow_html=True)
 st.sidebar.progress(min(st.session_state.xp / limit, 1.0))
 
-# [수정] 따옴표 에러 완벽 수정
 st.sidebar.markdown("""
 <div style="background-color: #333; padding: 15px; border-radius: 10px; font-size: 13px; color: #eee; margin-top: 10px; border: 1px solid #555;">
 <strong style="color: #00FF99; font-size: 14px;">Road to Grandmaster 🥋</strong>
@@ -145,7 +144,7 @@ if not api_key:
     st.stop()
 
 # ---------------------------------------------------------
-# 6. 데이터 함수 (뉴스 기능: Google News RSS로 교체)
+# 6. 데이터 함수
 # ---------------------------------------------------------
 def get_price(ticker):
     if not ticker or len(ticker) < 2: return 0.0
@@ -154,41 +153,26 @@ def get_price(ticker):
         t = yf.Ticker(ticker)
         h = t.history(period='1d')
         if not h.empty: return h['Close'].iloc[-1]
-        
         if hasattr(t, 'fast_info') and t.fast_info.last_price:
             return t.fast_info.last_price
         return 0.0
     except: 
         return 0.0
 
-# [핵심 수정] Google News RSS를 사용하여 뉴스 가져오기 (차단 확률 매우 낮음)
 def get_news(ticker):
     news_list = []
     try:
-        # Google News RSS 피드 URL
         url = f"https://news.google.com/rss/search?q={ticker}+stock+finance&hl=en-US&gl=US&ceid=US:en"
-        
-        # 3초 타임아웃으로 빠르게 요청
         resp = requests.get(url, timeout=3)
-        
         if resp.status_code == 200:
-            # XML 파싱
             root = ET.fromstring(resp.content)
-            # 상위 5개 뉴스 추출
             for item in root.findall('./channel/item')[:5]:
                 title = item.find('title').text if item.find('title') is not None else "No Title"
                 link = item.find('link').text if item.find('link') is not None else "#"
                 pubDate = item.find('pubDate').text if item.find('pubDate') is not None else ""
-                
-                news_list.append({
-                    'title': title,
-                    'url': link,
-                    'published': pubDate
-                })
+                news_list.append({'title': title, 'url': link, 'published': pubDate})
     except Exception as e:
         print(f"RSS Fetch Error: {e}")
-        pass
-        
     return news_list
 
 def get_data(ticker):
@@ -196,7 +180,6 @@ def get_data(ticker):
         ticker = ticker.strip().upper()
         t = yf.Ticker(ticker)
         h = t.history(period='3mo')
-        
         if h.empty: return None
         
         try:
@@ -204,16 +187,29 @@ def get_data(ticker):
         except:
             name = ticker
 
+        # [수정 핵심] 모바일 환경에서도 실적 날짜를 보장하기 위한 다중 레이어 로직
         earnings = "N/A"
         try:
             cal = t.calendar
-            if cal and isinstance(cal, dict):
-                dates = cal.get('Earnings Date') or cal.get('Earnings High')
-                if dates:
-                    earnings = str(dates[0].date()) if hasattr(dates[0], 'date') else str(dates[0])
+            # 1. 딕셔너리 형태일 때
+            if isinstance(cal, dict) and 'Earnings Date' in cal:
+                dates = cal['Earnings Date']
+                earnings = str(dates[0].date()) if hasattr(dates[0], 'date') else str(dates[0])
+            # 2. 데이터프레임 형태일 때 (인덱스 'Earnings Date' 또는 첫 번째 열)
+            elif isinstance(cal, pd.DataFrame):
+                if 'Earnings Date' in cal.index:
+                    d_val = cal.loc['Earnings Date'].iloc[0]
+                    earnings = str(d_val.date()) if hasattr(d_val, 'date') else str(d_val)
+                else:
+                    d_val = cal.iloc[0, 0]
+                    earnings = str(d_val.date()) if hasattr(d_val, 'date') else str(d_val)
+            
+            # 3. 위 방법들로 못 찾았을 때 t.info의 타임스탬프 활용 (모바일에서 가장 안정적)
             if earnings == "N/A":
-                ts = t.info.get('earningsTimestamp')
-                if ts: earnings = datetime.fromtimestamp(ts).strftime('%Y-%m-%d')
+                ts = t.info.get('earningsTimestamp') or t.info.get('nextEarningsDate')
+                if ts:
+                    if ts > 1e11: ts /= 1000 # 밀리초 단위 보정
+                    earnings = datetime.fromtimestamp(ts).strftime('%Y-%m-%d')
         except:
             earnings = "N/A"
 
@@ -245,7 +241,6 @@ with c3:
     curr = get_price(sym)
     st.text_input("Est. $", f"${curr*qty:,.0f}", disabled=True)
 
-# 버튼 1: Analyze
 st.button("🔍 Analyze (+10 XP)", use_container_width=True, on_click=cb_analyze)
 
 # ---------------------------------------------------------
@@ -270,7 +265,6 @@ if st.session_state.analyzed:
         </div>
         """, unsafe_allow_html=True)
         
-        # --- 지표 계산 ---
         try:
             delta = df['Close'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(14).mean()
@@ -294,16 +288,12 @@ if st.session_state.analyzed:
             bbl_val = curr_price * 0.95
             bbu_val = curr_price * 1.05
         
-        # 뉴스 가져오기
         news_items = get_news(sym)
-        
-        # 프롬프트에 넣을 뉴스 텍스트 생성
         if news_items:
             news_text = "\n".join([f"- {n['title']} (Source: Google News)" for n in news_items])
         else:
             news_text = "No specific news found."
 
-        # --- AI 프롬프트 ---
         sys_msg = "You are a helpful assistant. Output valid JSON only."
         user_msg = f"""
         Risk Profile: {risk}
@@ -352,7 +342,6 @@ if st.session_state.analyzed:
             
         final_sl = ai.get('stop_loss', 0.0)
         final_tp = ai.get('target', 0.0)
-        
         if final_sl <= 0.1: final_sl = bbl_val
         if final_tp <= 0.1: final_tp = bbu_val
         
@@ -368,7 +357,6 @@ if st.session_state.analyzed:
         if verdict == "WAIT":
             saved = (curr_price - final_sl) * qty
             if saved < 0: saved = curr_price * qty * 0.05
-            
             st.button(
                 f"✋ I decided to PAUSE (Save ${saved:,.0f} & +50 XP)", 
                 type="primary", 
@@ -383,7 +371,6 @@ if st.session_state.analyzed:
         m3.metric("Suggested Target", f"${final_tp:.2f}")
         
         st.divider()
-        
         st.subheader("🧐 Why?")
         reasons = ai.get('reasoning', [])
         if reasons:
@@ -409,5 +396,5 @@ if st.session_state.analyzed:
             open=df['Open'], high=df['High'],
             low=df['Low'], close=df['Close']
         )])
-        fig.update_layout(height=400, margin=dict(l=0,r=0,t=0,b=0))
+        fig.update_layout(height=400, margin=dict(l=0,r=0,t=0,b=0), template="plotly_dark")
         st.plotly_chart(fig, use_container_width=True)
