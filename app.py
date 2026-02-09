@@ -139,8 +139,13 @@ if "OPENAI_API_KEY" in st.secrets:
 else:
     api_key = st.sidebar.text_input("OpenAI API Key", type="password")
 
-st.sidebar.markdown("---")
-st.sidebar.caption("⚠️ **Disclaimer**: Not financial advice. For educational purposes only. Do your own research before trading.")
+st.sidebar.markdown("""
+<div style="margin-top: 30px; font-size: 11px; color: #666; text-align: center; line-height: 1.4;">
+    ⚠️ <b>Disclaimer</b><br>
+    Not financial advice.<br>
+    For educational purposes only.
+</div>
+""", unsafe_allow_html=True)
 
 if not api_key:
     st.warning("Enter API Key to start")
@@ -261,6 +266,7 @@ if st.session_state.analyzed:
         </div>
         """, unsafe_allow_html=True)
         
+        # 지표 계산
         try:
             delta = df['Close'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(14).mean()
@@ -284,23 +290,61 @@ if st.session_state.analyzed:
             bbl_val = curr_price * 0.95
             bbu_val = curr_price * 1.05
         
+        # 뉴스 가져오기
         news_items = get_news(sym)
         if news_items:
             news_text = "\n".join([f"- {n['title']}" for n in news_items])
         else:
             news_text = "No specific news found."
 
-        sys_msg = "You are a helpful assistant. Output valid JSON only."
-        # [수정 1] AI에게 명확하게 '3 short bullet points'라고 요청
+        # ---------------------------------------------------------
+        # [핵심 수정] AI 프롬프트 강화 (GO 확률 높이기)
+        # ---------------------------------------------------------
+        sys_msg = """
+        You are a highly experienced Swing Trader and Risk Manager at a top hedge fund. 
+        Your job is to analyze technical data and news to find profitable entry points.
+        
+        CRITICAL INSTRUCTIONS:
+        1. Be decisive. Do not hedge. If the setup looks good, say "GO".
+        2. "Moderate" risk means you act on standard technical setups (e.g., RSI < 40 + Support bounce).
+        3. "Aggressive" risk means you act on momentum or potential reversals even with higher volatility.
+        4. "Conservative" means you only act on perfect setups.
+        5. DO NOT always say WAIT. If there is a >60% chance of profit based on the data, say GO.
+        
+        Output valid JSON only. format: {"verdict": "GO" or "WAIT", "stop_loss": float, "target": float, "reasoning": ["point1", "point2"]}
+        """
+        
+        # 기술적 지표에 대한 AI의 판단을 돕기 위해 힌트 추가
+        rsi_signal = "Neutral"
+        if rsi_val < 35: rsi_signal = "Oversold (Buy Signal)"
+        elif rsi_val > 65: rsi_signal = "Overbought (Sell Signal)"
+        
+        bb_signal = "Neutral"
+        if curr_price <= bbl_val * 1.02: bb_signal = "Near Lower Band (Support/Buy Area)"
+        elif curr_price >= bbu_val * 0.98: bb_signal = "Near Upper Band (Resistance/Sell Area)"
+
         user_msg = f"""
-        Risk Profile: {risk}
-        Ticker: {sym}
-        Current Price: {curr_price:.2f}
-        RSI: {rsi_val:.1f}
-        Bollinger Lower: {bbl_val:.2f}
-        Bollinger Upper: {bbu_val:.2f}
-        News: {news_text[:1000]}
-        TASK: Decide VERDICT (GO or WAIT), set stop_loss, target, and reasoning (3 short bullet points).
+        Analyze this stock for a potential Long (Buy) position.
+
+        [Market Data]
+        - Ticker: {sym}
+        - Current Price: ${curr_price:.2f}
+        - Risk Profile: {risk} (Adjust your aggression accordingly)
+        
+        [Technical Indicators]
+        - RSI (14): {rsi_val:.1f} --> {rsi_signal}
+        - Bollinger Bands: Lower ${bbl_val:.2f} / Upper ${bbu_val:.2f}
+        - Price Position vs Bands: {bb_signal}
+        
+        [Recent News Titles]
+        {news_text[:1000]}
+        
+        [Decision Logic]
+        - IF (RSI is Oversold OR Price near Lower Band) AND (No disastrous news) -> Lean towards "GO".
+        - IF (Price is skyrocketing/Overbought) -> "WAIT".
+        - IF (News is very bad) -> "WAIT".
+        
+        TASK: Provide a final VERDICT (GO or WAIT), set a tight stop_loss, a realistic target, and 3 bullet points of reasoning.
         """
         
         try:
@@ -340,12 +384,7 @@ if st.session_state.analyzed:
         with st.expander("🧐 Why? & Recent News", expanded=True):
             st.markdown(f"**📅 Next Earnings Date:** {d['earnings']}")
             st.markdown("---")
-            
             reasons = ai.get('reasoning', [])
-            # [수정 2] 만약 AI가 여전히 줄글(String)로 주면 마침표(.) 단위로 잘라서 리스트로 변환
-            if isinstance(reasons, str): 
-                reasons = [r.strip() for r in reasons.split('.') if r.strip()]
-                
             for r in reasons: st.markdown(f"- {r}")
             st.markdown("---")
             if news_items:
