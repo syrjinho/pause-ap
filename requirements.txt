@@ -1,7 +1,7 @@
 streamlit
-yfinance>=0.2.38
+yfinance>=0.2.40
 pandas
-pandas_ta
 openai
 plotly
-duckduckgo-search
+duckduckgo-search>=5.0
+requests

@@ -7,6 +7,7 @@ import json
 import time
 from duckduckgo_search import DDGS
 from datetime import datetime
+import requests  # [추가됨] 차단 우회를 위해 필요
 
 # ---------------------------------------------------------
 # 1. 페이지 설정
@@ -143,44 +144,63 @@ if not api_key:
     st.stop()
 
 # ---------------------------------------------------------
-# 6. 데이터 함수
+# 6. 데이터 함수 (수정됨: 차단 방지 및 안전 장치 추가)
 # ---------------------------------------------------------
+
+# [수정됨] 브라우저인 척 위장하는 세션 생성 함수
+def get_yf_session():
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    })
+    return session
+
 @st.cache_data(ttl=600)
 def get_price(ticker):
     try: 
-        return yf.Ticker(ticker).history(period='5d')['Close'].iloc[-1]
+        # 세션 적용
+        return yf.Ticker(ticker, session=get_yf_session()).history(period='5d')['Close'].iloc[-1]
     except: return 0.0
 
+# [수정됨] 뉴스 가져오기: 에러가 나도 멈추지 않도록 처리
 def get_news(ticker):
     try:
         ddgs = DDGS()
-        r = list(ddgs.news(keywords=f"{ticker} stock", max_results=3))
+        # API 모드가 차단될 경우를 대비해 예외 처리
+        r = list(ddgs.text(keywords=f"{ticker} stock news", max_results=3))
         if not r: return []
-        return [{'title': x['title'], 'url': x['url']} for x in r]
-    except: return []
+        # DDGS 버전에 따라 키값이 다를 수 있어 .get 사용
+        return [{'title': x.get('title',''), 'url': x.get('href', x.get('url',''))} for x in r]
+    except Exception as e:
+        print(f"News error: {e}") # 로그만 남기고 빈 리스트 반환
+        return []
 
+# [수정됨] 데이터 가져오기: 안전성 강화
 def get_data(ticker):
     try:
-        t = yf.Ticker(ticker)
+        ticker = ticker.strip().upper()
+        # 세션 사용하여 차단 우회
+        t = yf.Ticker(ticker, session=get_yf_session())
+        
+        # history 먼저 호출 (가장 중요)
         h = t.history(period='6mo')
         if h.empty: return None
         
-        # [수정됨] 어닝 데이트 추출 로직 강화
+        # 이름 가져오기 (실패 시 티커로 대체)
+        try:
+            name = t.info.get('longName', ticker)
+        except:
+            name = ticker
+
+        # 어닝 데이트 추출 로직 강화
         earnings = "N/A"
         try:
             cal = t.calendar
             if cal is not None:
-                # 딕셔너리인 경우 (최신 버전 yfinance)
                 if isinstance(cal, dict):
-                    if 'Earnings Date' in cal:
-                        dates = cal['Earnings Date']
-                        if dates: earnings = str(dates[0])
-                    elif 'Earnings High' in cal: # 대체 키 확인
-                        dates = cal['Earnings High']
-                        if dates: earnings = str(dates[0])
-                # 데이터프레임인 경우 (구 버전)
+                    dates = cal.get('Earnings Date') or cal.get('Earnings High')
+                    if dates: earnings = str(dates[0].date()) if hasattr(dates[0], 'date') else str(dates[0])
                 elif not cal.empty:
-                    # 첫 번째 행, 첫 번째 열 값 가져오기
                     val = cal.iloc[0][0]
                     earnings = str(val.date()) if hasattr(val, 'date') else str(val)
         except:
@@ -189,10 +209,12 @@ def get_data(ticker):
         return {
             'hist': h, 
             'price': h['Close'].iloc[-1], 
-            'name': t.info.get('longName', ticker),
+            'name': name,
             'earnings': earnings
         }
-    except: return None
+    except Exception as e:
+        print(f"Data error: {e}")
+        return None
 
 # ---------------------------------------------------------
 # 7. 메인 화면
@@ -223,7 +245,7 @@ if st.session_state.analyzed:
     with st.spinner("Analyzing..."):
         d = get_data(sym)
         if not d:
-            st.error("Error fetching data. Check ticker symbol.")
+            st.error(f"Error fetching data for {sym}. Try refreshing or check the symbol.")
             st.stop()
             
         df = d['hist']
