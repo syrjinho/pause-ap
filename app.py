@@ -7,7 +7,6 @@ import json
 import time
 from duckduckgo_search import DDGS
 from datetime import datetime
-import requests  # [추가됨] 차단 우회를 위해 필요
 
 # ---------------------------------------------------------
 # 1. 페이지 설정
@@ -122,13 +121,14 @@ st.sidebar.markdown(f"""
 """, unsafe_allow_html=True)
 st.sidebar.progress(min(st.session_state.xp / limit, 1.0))
 
+# [수정] 따옴표 오류 방지를 위해 들여쓰기 조정
 st.sidebar.markdown("""
 <div style="background-color: #333; padding: 15px; border-radius: 10px; font-size: 13px; color: #eee; margin-top: 10px; border: 1px solid #555;">
-    <strong style="color: #00FF99; font-size: 14px;">Road to Grandmaster 🥋</strong>
-    <ul style="padding-left: 15px; margin-top: 8px; line-height: 1.6;">
-        <li>🔍 <b>+10 XP</b>: Analyze before you act. (No FOMO!)</li>
-        <li>✋ <b>+50 XP</b>: Choose to PAUSE. Patience is your strongest weapon.</li>
-    </ul>
+<strong style="color: #00FF99; font-size: 14px;">Road to Grandmaster 🥋</strong>
+<ul style="padding-left: 15px; margin-top: 8px; line-height: 1.6;">
+<li>🔍 <b>+10 XP</b>: Analyze before you act.</li>
+<li>✋ <b>+50 XP</b>: Choose to PAUSE.</li>
+</ul>
 </div>
 """, unsafe_allow_html=True)
 
@@ -144,55 +144,37 @@ if not api_key:
     st.stop()
 
 # ---------------------------------------------------------
-# 6. 데이터 함수 (수정됨: 차단 방지 및 안전 장치 추가)
+# 6. 데이터 함수
 # ---------------------------------------------------------
-
-# [수정됨] 브라우저인 척 위장하는 세션 생성 함수
-def get_yf_session():
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    })
-    return session
 
 @st.cache_data(ttl=600)
 def get_price(ticker):
     try: 
-        # 세션 적용
-        return yf.Ticker(ticker, session=get_yf_session()).history(period='5d')['Close'].iloc[-1]
+        return yf.Ticker(ticker).history(period='5d')['Close'].iloc[-1]
     except: return 0.0
 
-# [수정됨] 뉴스 가져오기: 에러가 나도 멈추지 않도록 처리
 def get_news(ticker):
     try:
         ddgs = DDGS()
-        # API 모드가 차단될 경우를 대비해 예외 처리
         r = list(ddgs.text(keywords=f"{ticker} stock news", max_results=3))
         if not r: return []
-        # DDGS 버전에 따라 키값이 다를 수 있어 .get 사용
         return [{'title': x.get('title',''), 'url': x.get('href', x.get('url',''))} for x in r]
-    except Exception as e:
-        print(f"News error: {e}") # 로그만 남기고 빈 리스트 반환
+    except:
         return []
 
-# [수정됨] 데이터 가져오기: 안전성 강화
 def get_data(ticker):
     try:
         ticker = ticker.strip().upper()
-        # 세션 사용하여 차단 우회
-        t = yf.Ticker(ticker, session=get_yf_session())
+        t = yf.Ticker(ticker)
+        h = t.history(period='3mo')
         
-        # history 먼저 호출 (가장 중요)
-        h = t.history(period='6mo')
         if h.empty: return None
         
-        # 이름 가져오기 (실패 시 티커로 대체)
         try:
             name = t.info.get('longName', ticker)
         except:
             name = ticker
 
-        # 어닝 데이트 추출 로직 강화
         earnings = "N/A"
         try:
             cal = t.calendar
@@ -244,14 +226,15 @@ st.button("🔍 Analyze (+10 XP)", use_container_width=True, on_click=cb_analyze
 if st.session_state.analyzed:
     with st.spinner("Analyzing..."):
         d = get_data(sym)
+        
         if not d:
-            st.error(f"Error fetching data for {sym}. Try refreshing or check the symbol.")
+            st.error(f"Error fetching data for {sym}. Please try again.")
+            st.session_state.analyzed = False 
             st.stop()
             
         df = d['hist']
         curr_price = d['price']
         
-        # [추가됨] 회사 정보 헤더 (분석 결과 맨 위에 표시)
         st.markdown(f"""
         <div class="company-header">
             <p class="company-ticker">{sym}</p>
@@ -259,16 +242,14 @@ if st.session_state.analyzed:
         </div>
         """, unsafe_allow_html=True)
         
-        # --- 지표 계산 (수동) ---
+        # --- 지표 계산 ---
         try:
-            # RSI
             delta = df['Close'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
             rs = gain / loss
             df['RSI'] = 100 - (100 / (1 + rs))
             
-            # BB
             sma = df['Close'].rolling(20).mean()
             std = df['Close'].rolling(20).std()
             df['BBL'] = sma - (2 * std)
@@ -282,7 +263,6 @@ if st.session_state.analyzed:
             
             bbu_val = df['BBU'].iloc[-1]
             if pd.isna(bbu_val): bbu_val = curr_price * 1.05
-            
         except:
             rsi_val = 50
             bbl_val = curr_price * 0.95
@@ -306,29 +286,19 @@ if st.session_state.analyzed:
         TASK:
         1. Decide VERDICT (GO or WAIT).
         2. Set 'stop_loss' and 'target'. 
-           - Stop Loss should be near Support/Lower BB.
-           - Target should be near Resistance/Upper BB.
-           - Never return 0.00.
-        3. Provide 'reasoning' as a list of exactly 3 strings:
-           - 1st string: Technical Analysis (RSI, BB).
-           - 2nd string: News Sentiment Analysis.
-           - 3rd string: Alignment with {risk} Risk Profile.
+        3. Provide 'reasoning' (3 strings).
 
         STRICT RULES:
-        - Conservative: WAIT if RSI > 60 or bad news.
+        - Conservative: WAIT if RSI > 60.
         - Moderate: WAIT if RSI > 65.
         - Aggressive: WAIT if RSI > 75.
 
         OUTPUT JSON FORMAT:
         {{
-          "verdict": "GO" or "WAIT",
-          "stop_loss": 123.45,
-          "target": 150.00,
-          "reasoning": [
-            "Technical: ...",
-            "News: ...",
-            "Risk Match: ..."
-          ]
+          "verdict": "GO",
+          "stop_loss": 100.0,
+          "target": 120.0,
+          "reasoning": ["Tech...", "News...", "Risk..."]
         }}
         """
         
@@ -347,14 +317,12 @@ if st.session_state.analyzed:
             st.error(f"AI Connection Error: {e}")
             st.stop()
             
-        # --- 값 보정 ---
         final_sl = ai.get('stop_loss', 0.0)
         final_tp = ai.get('target', 0.0)
         
         if final_sl <= 0.1: final_sl = bbl_val
         if final_tp <= 0.1: final_tp = bbu_val
         
-        # --- UI 표시 ---
         verdict = ai.get('verdict', 'WAIT')
         color = "#00CC7A" if verdict == "GO" else "#FF4B4B"
         
@@ -364,7 +332,6 @@ if st.session_state.analyzed:
         </div>
         """, unsafe_allow_html=True)
         
-        # 버튼 2: Pause
         if verdict == "WAIT":
             saved = (curr_price - final_sl) * qty
             if saved < 0: saved = curr_price * qty * 0.05
@@ -377,7 +344,6 @@ if st.session_state.analyzed:
                 args=(saved,)
             )
             
-        # Metrics 표시
         m1, m2, m3 = st.columns(3)
         m1.metric("Current Price", f"${curr_price:.2f}")
         m2.metric("Suggested Stop Loss", f"${final_sl:.2f}")
@@ -385,7 +351,6 @@ if st.session_state.analyzed:
         
         st.divider()
         
-        # Why Section
         st.subheader("🧐 Why?")
         reasons = ai.get('reasoning', [])
         if reasons:
@@ -394,7 +359,6 @@ if st.session_state.analyzed:
         else:
             st.write("No reasoning provided.")
             
-        # News & Earnings
         st.divider()
         with st.expander("📰 Recent News & Earnings Date", expanded=True):
             st.markdown(f"**📅 Next Earnings Date:** {d['earnings']}")
@@ -405,7 +369,6 @@ if st.session_state.analyzed:
             else:
                 st.write("No recent news found.")
             
-        # Chart
         st.divider()
         st.subheader("Chart")
         fig = go.Figure(data=[go.Candlestick(
