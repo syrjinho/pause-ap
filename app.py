@@ -107,7 +107,7 @@ def get_belt(xp):
 # ---------------------------------------------------------
 st.sidebar.markdown("""
 <h1 style='margin-bottom: 0px;'>⏸️ PAUSE</h1>
-<p style='font-size: 14px; color: #888; margin-top: 0px;'>Welcome to Dojo</p>
+<p style='font-size: 14px; color: #888; margin-top: 0px;'>Absolutely not. We've seen this before.</p>
 """, unsafe_allow_html=True)
 
 belt = get_belt(st.session_state.xp)
@@ -138,6 +138,9 @@ if "OPENAI_API_KEY" in st.secrets:
     api_key = st.secrets["OPENAI_API_KEY"]
 else:
     api_key = st.sidebar.text_input("OpenAI API Key", type="password")
+
+st.sidebar.markdown("---")
+st.sidebar.caption("⚠️ **Disclaimer**: Not financial advice. For educational purposes only. Do your own research before trading.")
 
 if not api_key:
     st.warning("Enter API Key to start")
@@ -171,8 +174,8 @@ def get_news(ticker):
                 link = item.find('link').text if item.find('link') is not None else "#"
                 pubDate = item.find('pubDate').text if item.find('pubDate') is not None else ""
                 news_list.append({'title': title, 'url': link, 'published': pubDate})
-    except Exception as e:
-        print(f"RSS Fetch Error: {e}")
+    except:
+        pass
     return news_list
 
 def get_data(ticker):
@@ -187,28 +190,21 @@ def get_data(ticker):
         except:
             name = ticker
 
-        # [수정 핵심] 모바일 환경에서도 실적 날짜를 보장하기 위한 다중 레이어 로직
         earnings = "N/A"
         try:
             cal = t.calendar
-            # 1. 딕셔너리 형태일 때
-            if isinstance(cal, dict) and 'Earnings Date' in cal:
-                dates = cal['Earnings Date']
-                earnings = str(dates[0].date()) if hasattr(dates[0], 'date') else str(dates[0])
-            # 2. 데이터프레임 형태일 때 (인덱스 'Earnings Date' 또는 첫 번째 열)
-            elif isinstance(cal, pd.DataFrame):
-                if 'Earnings Date' in cal.index:
-                    d_val = cal.loc['Earnings Date'].iloc[0]
-                    earnings = str(d_val.date()) if hasattr(d_val, 'date') else str(d_val)
-                else:
-                    d_val = cal.iloc[0, 0]
-                    earnings = str(d_val.date()) if hasattr(d_val, 'date') else str(d_val)
-            
-            # 3. 위 방법들로 못 찾았을 때 t.info의 타임스탬프 활용 (모바일에서 가장 안정적)
+            if cal is not None:
+                if isinstance(cal, pd.DataFrame) and not cal.empty and 'Earnings Date' in cal.index:
+                    d_list = cal.loc['Earnings Date'].tolist()
+                    earnings = str(d_list[0].date()) if hasattr(d_list[0], 'date') else str(d_list[0])
+                elif isinstance(cal, dict) and 'Earnings Date' in cal:
+                    d_list = cal['Earnings Date']
+                    earnings = str(d_list[0].date()) if hasattr(d_list[0], 'date') else str(d_list[0])
+
             if earnings == "N/A":
                 ts = t.info.get('earningsTimestamp') or t.info.get('nextEarningsDate')
                 if ts:
-                    if ts > 1e11: ts /= 1000 # 밀리초 단위 보정
+                    if ts > 1e11: ts /= 1000
                     earnings = datetime.fromtimestamp(ts).strftime('%Y-%m-%d')
         except:
             earnings = "N/A"
@@ -290,11 +286,12 @@ if st.session_state.analyzed:
         
         news_items = get_news(sym)
         if news_items:
-            news_text = "\n".join([f"- {n['title']} (Source: Google News)" for n in news_items])
+            news_text = "\n".join([f"- {n['title']}" for n in news_items])
         else:
             news_text = "No specific news found."
 
         sys_msg = "You are a helpful assistant. Output valid JSON only."
+        # [수정 1] AI에게 명확하게 '3 short bullet points'라고 요청
         user_msg = f"""
         Risk Profile: {risk}
         Ticker: {sym}
@@ -302,37 +299,15 @@ if st.session_state.analyzed:
         RSI: {rsi_val:.1f}
         Bollinger Lower: {bbl_val:.2f}
         Bollinger Upper: {bbu_val:.2f}
-        News Headlines:
-        {news_text[:1000]}
-
-        TASK:
-        1. Decide VERDICT (GO or WAIT).
-        2. Set 'stop_loss' and 'target'. 
-        3. Provide 'reasoning' (3 strings).
-
-        STRICT RULES:
-        - Conservative: WAIT if RSI > 60.
-        - Moderate: WAIT if RSI > 65.
-        - Aggressive: WAIT if RSI > 75.
-        - IF News is extremely negative, SUGGEST WAIT regardless of RSI.
-
-        OUTPUT JSON FORMAT:
-        {{
-          "verdict": "GO",
-          "stop_loss": 100.0,
-          "target": 120.0,
-          "reasoning": ["Tech...", "News...", "Risk..."]
-        }}
+        News: {news_text[:1000]}
+        TASK: Decide VERDICT (GO or WAIT), set stop_loss, target, and reasoning (3 short bullet points).
         """
         
         try:
             client = OpenAI(api_key=api_key)
             res = client.chat.completions.create(
                 model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": sys_msg},
-                    {"role": "user", "content": user_msg}
-                ],
+                messages=[{"role": "system", "content": sys_msg}, {"role": "user", "content": user_msg}],
                 response_format={"type": "json_object"}
             )
             ai = json.loads(res.choices[0].message.content)
@@ -340,11 +315,8 @@ if st.session_state.analyzed:
             st.error(f"AI Connection Error: {e}")
             st.stop()
             
-        final_sl = ai.get('stop_loss', 0.0)
-        final_tp = ai.get('target', 0.0)
-        if final_sl <= 0.1: final_sl = bbl_val
-        if final_tp <= 0.1: final_tp = bbu_val
-        
+        final_sl = ai.get('stop_loss', bbl_val)
+        final_tp = ai.get('target', bbu_val)
         verdict = ai.get('verdict', 'WAIT')
         color = "#00CC7A" if verdict == "GO" else "#FF4B4B"
         
@@ -357,44 +329,29 @@ if st.session_state.analyzed:
         if verdict == "WAIT":
             saved = (curr_price - final_sl) * qty
             if saved < 0: saved = curr_price * qty * 0.05
-            st.button(
-                f"✋ I decided to PAUSE (Save ${saved:,.0f} & +50 XP)", 
-                type="primary", 
-                use_container_width=True,
-                on_click=cb_pause,
-                args=(saved,)
-            )
+            st.button(f"✋ I decided to PAUSE (Save ${saved:,.0f} & +50 XP)", type="primary", use_container_width=True, on_click=cb_pause, args=(saved,))
             
         m1, m2, m3 = st.columns(3)
         m1.metric("Current Price", f"${curr_price:.2f}")
-        m2.metric("Suggested Stop Loss", f"${final_sl:.2f}")
-        m3.metric("Suggested Target", f"${final_tp:.2f}")
+        m2.metric("Stop Loss", f"${final_sl:.2f}")
+        m3.metric("Target", f"${final_tp:.2f}")
         
         st.divider()
-        st.subheader("🧐 Why?")
-        reasons = ai.get('reasoning', [])
-        if reasons:
-            for r in reasons:
-                st.markdown(f"- {r}")
-        else:
-            st.write("No reasoning provided.")
-            
-        st.divider()
-        with st.expander("📰 Recent News & Earnings Date", expanded=True):
+        with st.expander("🧐 Why? & Recent News", expanded=True):
             st.markdown(f"**📅 Next Earnings Date:** {d['earnings']}")
             st.markdown("---")
-            if news_items:
-                for n in news_items:
-                    st.markdown(f"- [{n['title']}]({n['url']})")
-            else:
-                st.write("No recent news found.")
             
-        st.divider()
+            reasons = ai.get('reasoning', [])
+            # [수정 2] 만약 AI가 여전히 줄글(String)로 주면 마침표(.) 단위로 잘라서 리스트로 변환
+            if isinstance(reasons, str): 
+                reasons = [r.strip() for r in reasons.split('.') if r.strip()]
+                
+            for r in reasons: st.markdown(f"- {r}")
+            st.markdown("---")
+            if news_items:
+                for n in news_items: st.markdown(f"- [{n['title']}]({n['url']})")
+        
         st.subheader("Chart")
-        fig = go.Figure(data=[go.Candlestick(
-            x=df.index,
-            open=df['Open'], high=df['High'],
-            low=df['Low'], close=df['Close']
-        )])
-        fig.update_layout(height=400, margin=dict(l=0,r=0,t=0,b=0), template="plotly_dark")
+        fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
+        fig.update_layout(height=400, margin=dict(l=0,r=0,t=0,b=0))
         st.plotly_chart(fig, use_container_width=True)
