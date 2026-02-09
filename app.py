@@ -5,7 +5,8 @@ from openai import OpenAI
 import plotly.graph_objects as go
 import json
 import time
-from duckduckgo_search import DDGS
+import requests
+import xml.etree.ElementTree as ET
 from datetime import datetime
 
 # ---------------------------------------------------------
@@ -121,7 +122,7 @@ st.sidebar.markdown(f"""
 """, unsafe_allow_html=True)
 st.sidebar.progress(min(st.session_state.xp / limit, 1.0))
 
-# [수정] 따옴표 오류 방지를 위해 들여쓰기 조정
+# [수정] 따옴표 에러 완벽 수정
 st.sidebar.markdown("""
 <div style="background-color: #333; padding: 15px; border-radius: 10px; font-size: 13px; color: #eee; margin-top: 10px; border: 1px solid #555;">
 <strong style="color: #00FF99; font-size: 14px;">Road to Grandmaster 🥋</strong>
@@ -140,27 +141,55 @@ else:
     api_key = st.sidebar.text_input("OpenAI API Key", type="password")
 
 if not api_key:
-    st.warning("Enter API Key")
+    st.warning("Enter API Key to start")
     st.stop()
 
 # ---------------------------------------------------------
-# 6. 데이터 함수
+# 6. 데이터 함수 (뉴스 기능: Google News RSS로 교체)
 # ---------------------------------------------------------
-
-@st.cache_data(ttl=600)
 def get_price(ticker):
+    if not ticker or len(ticker) < 2: return 0.0
     try: 
-        return yf.Ticker(ticker).history(period='5d')['Close'].iloc[-1]
-    except: return 0.0
+        ticker = ticker.strip().upper()
+        t = yf.Ticker(ticker)
+        h = t.history(period='1d')
+        if not h.empty: return h['Close'].iloc[-1]
+        
+        if hasattr(t, 'fast_info') and t.fast_info.last_price:
+            return t.fast_info.last_price
+        return 0.0
+    except: 
+        return 0.0
 
+# [핵심 수정] Google News RSS를 사용하여 뉴스 가져오기 (차단 확률 매우 낮음)
 def get_news(ticker):
+    news_list = []
     try:
-        ddgs = DDGS()
-        r = list(ddgs.text(keywords=f"{ticker} stock news", max_results=3))
-        if not r: return []
-        return [{'title': x.get('title',''), 'url': x.get('href', x.get('url',''))} for x in r]
-    except:
-        return []
+        # Google News RSS 피드 URL
+        url = f"https://news.google.com/rss/search?q={ticker}+stock+finance&hl=en-US&gl=US&ceid=US:en"
+        
+        # 3초 타임아웃으로 빠르게 요청
+        resp = requests.get(url, timeout=3)
+        
+        if resp.status_code == 200:
+            # XML 파싱
+            root = ET.fromstring(resp.content)
+            # 상위 5개 뉴스 추출
+            for item in root.findall('./channel/item')[:5]:
+                title = item.find('title').text if item.find('title') is not None else "No Title"
+                link = item.find('link').text if item.find('link') is not None else "#"
+                pubDate = item.find('pubDate').text if item.find('pubDate') is not None else ""
+                
+                news_list.append({
+                    'title': title,
+                    'url': link,
+                    'published': pubDate
+                })
+    except Exception as e:
+        print(f"RSS Fetch Error: {e}")
+        pass
+        
+    return news_list
 
 def get_data(ticker):
     try:
@@ -178,13 +207,13 @@ def get_data(ticker):
         earnings = "N/A"
         try:
             cal = t.calendar
-            if cal is not None:
-                if isinstance(cal, dict):
-                    dates = cal.get('Earnings Date') or cal.get('Earnings High')
-                    if dates: earnings = str(dates[0].date()) if hasattr(dates[0], 'date') else str(dates[0])
-                elif not cal.empty:
-                    val = cal.iloc[0][0]
-                    earnings = str(val.date()) if hasattr(val, 'date') else str(val)
+            if cal and isinstance(cal, dict):
+                dates = cal.get('Earnings Date') or cal.get('Earnings High')
+                if dates:
+                    earnings = str(dates[0].date()) if hasattr(dates[0], 'date') else str(dates[0])
+            if earnings == "N/A":
+                ts = t.info.get('earningsTimestamp')
+                if ts: earnings = datetime.fromtimestamp(ts).strftime('%Y-%m-%d')
         except:
             earnings = "N/A"
 
@@ -194,8 +223,7 @@ def get_data(ticker):
             'name': name,
             'earnings': earnings
         }
-    except Exception as e:
-        print(f"Data error: {e}")
+    except:
         return None
 
 # ---------------------------------------------------------
@@ -211,10 +239,10 @@ if st.session_state.msg:
 risk = st.selectbox("Risk", ["Conservative", "Moderate", "Aggressive"], index=1)
 
 c1, c2, c3 = st.columns(3)
-with c1: sym = st.text_input("Ticker", "NVDA").upper()
+with c1: sym = st.text_input("Ticker", "NVDA").strip().upper()
 with c2: qty = st.number_input("Qty", 1, value=100)
 with c3:
-    curr = get_price(sym) if sym else 0
+    curr = get_price(sym)
     st.text_input("Est. $", f"${curr*qty:,.0f}", disabled=True)
 
 # 버튼 1: Analyze
@@ -257,10 +285,8 @@ if st.session_state.analyzed:
             
             rsi_val = df['RSI'].iloc[-1]
             if pd.isna(rsi_val): rsi_val = 50
-            
             bbl_val = df['BBL'].iloc[-1]
             if pd.isna(bbl_val): bbl_val = curr_price * 0.95
-            
             bbu_val = df['BBU'].iloc[-1]
             if pd.isna(bbu_val): bbu_val = curr_price * 1.05
         except:
@@ -268,9 +294,15 @@ if st.session_state.analyzed:
             bbl_val = curr_price * 0.95
             bbu_val = curr_price * 1.05
         
+        # 뉴스 가져오기
         news_items = get_news(sym)
-        news_text = "\n".join([f"- {n['title']}" for n in news_items]) if news_items else "No recent news."
         
+        # 프롬프트에 넣을 뉴스 텍스트 생성
+        if news_items:
+            news_text = "\n".join([f"- {n['title']} (Source: Google News)" for n in news_items])
+        else:
+            news_text = "No specific news found."
+
         # --- AI 프롬프트 ---
         sys_msg = "You are a helpful assistant. Output valid JSON only."
         user_msg = f"""
@@ -281,7 +313,7 @@ if st.session_state.analyzed:
         Bollinger Lower: {bbl_val:.2f}
         Bollinger Upper: {bbu_val:.2f}
         News Headlines:
-        {news_text[:500]}
+        {news_text[:1000]}
 
         TASK:
         1. Decide VERDICT (GO or WAIT).
@@ -292,6 +324,7 @@ if st.session_state.analyzed:
         - Conservative: WAIT if RSI > 60.
         - Moderate: WAIT if RSI > 65.
         - Aggressive: WAIT if RSI > 75.
+        - IF News is extremely negative, SUGGEST WAIT regardless of RSI.
 
         OUTPUT JSON FORMAT:
         {{
