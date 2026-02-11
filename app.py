@@ -152,17 +152,17 @@ if not api_key:
     st.stop()
 
 # ---------------------------------------------------------
-# 6. 데이터 함수 (매크로 & 거래량 포함)
+# 6. 데이터 함수
 # ---------------------------------------------------------
 def get_price(ticker):
     if not ticker or len(ticker) < 2: return 0.0
     try: 
         ticker = ticker.strip().upper()
         t = yf.Ticker(ticker)
+        if hasattr(t, 'fast_info') and t.fast_info.last_price:
+             return t.fast_info.last_price
         h = t.history(period='1d')
         if not h.empty: return h['Close'].iloc[-1]
-        if hasattr(t, 'fast_info') and t.fast_info.last_price:
-            return t.fast_info.last_price
         return 0.0
     except: 
         return 0.0
@@ -223,8 +223,18 @@ def get_data(ticker):
         h = t.history(period='3mo')
         if h.empty: return None
         
+        info = t.info
+        fundamentals = {
+            "market_cap": info.get('marketCap'),
+            "trailing_pe": info.get('trailingPE'),
+            "forward_pe": info.get('forwardPE'),
+            "revenue_growth": info.get('revenueGrowth'),
+            "profit_margins": info.get('profitMargins'),
+            "debt_to_equity": info.get('debtToEquity')
+        }
+        
         try:
-            name = t.info.get('longName', ticker)
+            name = info.get('longName', ticker)
         except:
             name = ticker
 
@@ -232,15 +242,13 @@ def get_data(ticker):
         try:
             cal = t.calendar
             if cal is not None:
-                if isinstance(cal, pd.DataFrame) and not cal.empty and 'Earnings Date' in cal.index:
-                    d_list = cal.loc['Earnings Date'].tolist()
-                    earnings = str(d_list[0].date()) if hasattr(d_list[0], 'date') else str(d_list[0])
-                elif isinstance(cal, dict) and 'Earnings Date' in cal:
-                    d_list = cal['Earnings Date']
-                    earnings = str(d_list[0].date()) if hasattr(d_list[0], 'date') else str(d_list[0])
-
+                if isinstance(cal, dict) and 'Earnings Date' in cal:
+                    earnings = str(cal['Earnings Date'][0])
+                elif isinstance(cal, pd.DataFrame) and 'Earnings Date' in cal.index:
+                    earnings = str(cal.loc['Earnings Date'].iloc[0])
+            
             if earnings == "N/A":
-                ts = t.info.get('earningsTimestamp') or t.info.get('nextEarningsDate')
+                ts = info.get('earningsTimestamp') or info.get('nextEarningsDate')
                 if ts:
                     if ts > 1e11: ts /= 1000
                     earnings = datetime.fromtimestamp(ts).strftime('%Y-%m-%d')
@@ -251,10 +259,28 @@ def get_data(ticker):
             'hist': h, 
             'price': h['Close'].iloc[-1], 
             'name': name,
-            'earnings': earnings
+            'earnings': earnings,
+            'fund': fundamentals
         }
     except:
         return None
+
+def safe_display_list(data_list, fallback_msg):
+    if isinstance(data_list, list):
+        for item in data_list:
+            st.markdown(f"- {item}")
+    elif isinstance(data_list, str):
+        st.markdown(f"- {data_list}")
+    else:
+        st.markdown(f"- {fallback_msg}")
+
+def safe_float(val, fallback):
+    try:
+        if val is None: return fallback
+        if isinstance(val, str) and "N/A" in val: return fallback
+        return float(val)
+    except:
+        return fallback
 
 # ---------------------------------------------------------
 # 7. 메인 화면
@@ -278,10 +304,10 @@ with c3:
 st.button("🔍 Analyze (+10 XP)", use_container_width=True, on_click=cb_analyze)
 
 # ---------------------------------------------------------
-# 8. 분석 로직 (뉴스/차트/결론 분리)
+# 8. 분석 로직
 # ---------------------------------------------------------
 if st.session_state.analyzed:
-    with st.spinner("Analyzing Smart Money Flow & Macro..."):
+    with st.spinner("Analyzing Market Opportunities..."):
         d = get_data(sym)
         
         if not d:
@@ -291,6 +317,7 @@ if st.session_state.analyzed:
             
         df = d['hist']
         curr_price = d['price']
+        fund = d['fund']
         
         st.markdown(f"""
         <div class="company-header">
@@ -299,22 +326,18 @@ if st.session_state.analyzed:
         </div>
         """, unsafe_allow_html=True)
         
-        # --- 기술적 지표 + 거래량 분석 계산 ---
         try:
-            # 1. Price Changes
             delta = df['Close'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
             rs = gain / loss
             df['RSI'] = 100 - (100 / (1 + rs))
             
-            # 2. Bollinger Bands
             sma = df['Close'].rolling(20).mean()
             std = df['Close'].rolling(20).std()
             df['BBL'] = sma - (2 * std)
             df['BBU'] = sma + (2 * std)
             
-            # 3. Volume Analysis
             vol_sma = df['Volume'].rolling(20).mean()
             curr_vol = df['Volume'].iloc[-1]
             avg_vol = vol_sma.iloc[-1]
@@ -323,21 +346,15 @@ if st.session_state.analyzed:
             rsi_val = df['RSI'].iloc[-1] if not pd.isna(df['RSI'].iloc[-1]) else 50
             bbl_val = df['BBL'].iloc[-1] if not pd.isna(df['BBL'].iloc[-1]) else curr_price * 0.95
             bbu_val = df['BBU'].iloc[-1] if not pd.isna(df['BBU'].iloc[-1]) else curr_price * 1.05
-            
         except:
             rsi_val = 50
             bbl_val = curr_price * 0.95
             bbu_val = curr_price * 1.05
             vol_ratio = 100
         
-        # 뉴스 가져오기
         news_items = get_news(sym)
-        if news_items:
-            news_text = "\n".join([f"- {n['title']}" for n in news_items])
-        else:
-            news_text = "No specific news found."
+        news_text = "\n".join([f"- {n['title']}" for n in news_items]) if news_items else "No specific news."
 
-        # 매크로 데이터
         macro = get_macro_data()
         macro_text = "Macro Data Unavailable"
         market_condition = "Neutral"
@@ -345,86 +362,85 @@ if st.session_state.analyzed:
 
         if macro:
             spy_change_5d = macro['spy_change_5d']
-            if macro['vix'] > 25: vix_status = "EXTREME FEAR (Danger)"
-            elif macro['vix'] > 20: vix_status = "High Volatility"
+            # VIX 기준 현실화: 30 이상이어야 위험 (기존 20은 너무 낮음)
+            if macro['vix'] > 30: vix_status = "EXTREME FEAR (Danger)"
+            elif macro['vix'] > 20: vix_status = "High Volatility (Caution)"
             else: vix_status = "Stable"
             
             spy_trend = "Uptrend" if macro['spy_change_5d'] > 0 else "Downtrend"
+            macro_text = f"SPY: ${macro['spy_price']:.2f} ({spy_trend}), VIX: {macro['vix']:.2f} ({vix_status})"
             
-            macro_text = f"""
-            - S&P 500 (SPY): ${macro['spy_price']:.2f} ({spy_trend}, {macro['spy_change_5d']:.2f}% 5d change)
-            - VIX: {macro['vix']:.2f} ({vix_status})
-            - 10Y Yield: {macro['tnx']:.2f}%
-            """
-            
-            if macro['vix'] > 25 or macro['spy_change_5d'] < -3: market_condition = "BEARISH"
-            elif macro['vix'] < 16 and macro['spy_change_5d'] > 0: market_condition = "BULLISH"
+            if macro['vix'] > 30 or macro['spy_change_5d'] < -5: market_condition = "BEARISH"
+            elif macro['vix'] < 20 and macro['spy_change_5d'] > 0: market_condition = "BULLISH"
             else: market_condition = "NEUTRAL"
 
-        # --- 상대 강도 (Relative Strength) ---
         try:
             stock_5d_change = ((df['Close'].iloc[-1] - df['Close'].iloc[-5]) / df['Close'].iloc[-5]) * 100
         except:
             stock_5d_change = 0.0
-            
         relative_strength = stock_5d_change - spy_change_5d
-        rs_status = "Outperforming Market" if relative_strength > 0 else "Underperforming Market"
+        rs_status = "Outperforming" if relative_strength > 0 else "Underperforming"
 
         # ---------------------------------------------------------
-        # AI 프롬프트 (JSON 구조 분리 요청 + Conclusion)
+        # AI 프롬프트 (핵심: Moderate 성향 튜닝)
         # ---------------------------------------------------------
+        mk_cap_B = (fund['market_cap'] / 1e9) if fund['market_cap'] else 0.0
+        pe_ratio = f"{fund['trailing_pe']:.2f}" if fund['trailing_pe'] else "N/A"
+        rev_growth = f"{fund['revenue_growth']*100:.1f}%" if fund['revenue_growth'] else "N/A"
+        profit_margin = f"{fund['profit_margins']*100:.1f}%" if fund['profit_margins'] else "N/A"
+        
+        # [System Prompt 변경] : 쫄보(Risk Manager) -> 기회주의자(Pragmatic Trader)
         sys_msg = """
-        You are a Hedge Fund Portfolio Manager.
+        You are a Pragmatic Swing Trader. 
+        Your goal is to find PROFITABLE setups, not just avoid risk.
         
-        CRITICAL RULES:
-        1. **IGNORE NEWS IF PRICE DISAGREES**: If news is "Good" but Price is dropping -> SELL signal (Trap).
-        2. **VOLUME IS KING**: Low volume rally = Fake.
-        3. **RELATIVE STRENGTH**: Weak stock in strong market = AVOID.
-        4. **MACRO**: Do not buy in a Crash (VIX > 25).
+        **CRITICAL INSTRUCTIONS FOR 'MODERATE' & 'AGGRESSIVE':**
+        1. **DON'T BE A COWARD**: If the stock is trending up (Price > SMA20) and Volume is decent, say **GO**.
+        2. **IMPERFECTION IS OK**: 
+           - High P/E? Okay if it's a Growth Stock (High Revenue Growth).
+           - Market Choppy? Okay if the stock has Relative Strength.
+        3. **WAIT CONDITIONS (Only specific cases)**:
+           - VIX > 30 (Market Crash).
+           - RSI > 75 (Extreme Overbought).
+           - Active Scandal/Fraud News.
+        4. **DEFAULT BIAS**: If it looks like a standard "Buy the Dip" or "Breakout", say **GO**.
         
-        Output valid JSON only with specific keys:
-        {
-            "verdict": "GO" or "WAIT",
-            "stop_loss": float,
-            "target": float,
-            "news_analysis": ["bullet 1", "bullet 2"],
-            "tech_analysis": ["bullet 1", "bullet 2"],
-            "conclusion": ["Summary 1", "Summary 2"]
-        }
+        Output valid JSON only with keys: 
+        {"verdict", "stop_loss", "target", "fund_analysis", "news_analysis", "tech_analysis", "conclusion"}
+        
+        IMPORTANT: Analysis fields must be LISTS of strings.
         """
         
-        vol_status = "Normal"
-        if vol_ratio > 150: vol_status = "Explosive Volume (High Conviction)"
-        elif vol_ratio < 70: vol_status = "Weak Volume (Low Conviction)"
-        
-        rsi_signal = "Neutral"
-        if rsi_val < 35: rsi_signal = "Oversold (Buy Zone)"
-        elif rsi_val > 65: rsi_signal = "Overbought (Sell Zone)"
+        vol_status = "High" if vol_ratio > 120 else "Low" if vol_ratio < 80 else "Normal"
+        rsi_signal = "Oversold (Buy)" if rsi_val < 45 else "Overbought (Sell)" if rsi_val > 70 else "Neutral"
 
         user_msg = f"""
-        Analyze this stock for a Swing Trade Entry.
+        Analyze {sym}. Risk Profile: {risk}.
 
-        [1. MARKET & MACRO]
-        - Condition: {market_condition}
-        {macro_text}
+        [1. FUNDAMENTALS]
+        - Market Cap: ${mk_cap_B:.2f} B
+        - P/E: {pe_ratio}
+        - Rev Growth: {rev_growth} (High growth justifies high P/E)
+        - Profit Margin: {profit_margin}
 
-        [2. STOCK vs MARKET]
-        - Stock 5d Change: {stock_5d_change:.2f}%
-        - Market (SPY) 5d Change: {spy_change_5d:.2f}%
-        - Status: {rs_status}
-
-        [3. TECHNICALS & VOLUME]
-        - Current Price: ${curr_price:.2f}
-        - RSI: {rsi_val:.1f} ({rsi_signal})
-        - Bollinger Bands: ${bbl_val:.2f} ~ ${bbu_val:.2f}
-        - Volume Ratio: {vol_ratio:.0f}% of Avg ({vol_status})
-
-        [4. NEWS HEADLINES]
-        {news_text[:1000]}
+        [2. MARKET CONTEXT]
+        - Condition: {market_condition} (Don't panic if Neutral)
+        - {macro_text}
         
-        TASK:
-        Decide VERDICT (GO / WAIT).
-        Separate reasoning into "News Analysis", "Technical Analysis", and "Conclusion" (Final Verdict Summary).
+        [3. MOMENTUM]
+        - vs SPY: {rs_status} (Stock {stock_5d_change:.1f}% vs SPY {spy_change_5d:.1f}%)
+
+        [4. TECHNICALS]
+        - Price: ${curr_price:.2f}
+        - RSI: {rsi_val:.1f} ({rsi_signal})
+        - Volume: {vol_ratio:.0f}% ({vol_status})
+
+        [5. NEWS]
+        {news_text[:800]}
+        
+        DECISION:
+        - If Risk is 'Moderate', accept standard setups (e.g. RSI 40-55 + Uptrend).
+        - Give a "GO" unless there is a red flag.
         """
         
         try:
@@ -439,9 +455,11 @@ if st.session_state.analyzed:
             st.error(f"AI Connection Error: {e}")
             st.stop()
             
-        final_sl = ai.get('stop_loss', bbl_val)
-        final_tp = ai.get('target', bbu_val)
+        final_sl = safe_float(ai.get('stop_loss'), bbl_val)
+        final_tp = safe_float(ai.get('target'), bbu_val)
         verdict = ai.get('verdict', 'WAIT')
+        
+        # 시각적 효과
         color = "#00CC7A" if verdict == "GO" else "#FF4B4B"
         
         st.markdown(f"""
@@ -461,28 +479,27 @@ if st.session_state.analyzed:
         m3.metric("Target", f"${final_tp:.2f}")
         
         st.divider()
-        with st.expander("🧐 Deep Analysis (News, Tech & Conclusion)", expanded=True):
-            st.markdown(f"**📊 Volume:** {vol_status} ({vol_ratio:.0f}%)")
-            # [수정된 부분] 수치 포함하여 표시
-            st.markdown(f"**💪 vs Market:** {rs_status} (Stock: {stock_5d_change:.1f}% vs SPY: {spy_change_5d:.1f}%)")
+        with st.expander("🧐 Full Analysis Report", expanded=True):
+            st.markdown(f"**🏢 Fundamentals:** P/E {pe_ratio} | Growth {rev_growth}")
+            st.markdown(f"**💪 vs Market:** {rs_status} (Stock {stock_5d_change:.1f}% vs SPY {spy_change_5d:.1f}%)")
             
             st.markdown("---")
+            st.subheader("🏢 Fundamental Analysis")
+            safe_display_list(ai.get('fund_analysis'), "No analysis provided.")
+
+            st.markdown("---")
             st.subheader("📰 News & Sentiment")
-            for n in ai.get('news_analysis', ["No news analysis."]):
-                st.markdown(f"- {n}")
+            safe_display_list(ai.get('news_analysis'), "No analysis provided.")
                 
             st.markdown("---")
             st.subheader("📉 Technical & Volume")
-            for t in ai.get('tech_analysis', ["No technical analysis."]):
-                st.markdown(f"- {t}")
+            safe_display_list(ai.get('tech_analysis'), "No analysis provided.")
 
             st.markdown("---")
             st.subheader("🏁 Conclusion")
-            for c in ai.get('conclusion', ["No conclusion provided."]):
-                st.markdown(f"- {c}")
+            safe_display_list(ai.get('conclusion'), "No conclusion provided.")
             
             st.markdown("---")
-            st.markdown("**Recent Headlines:**")
             if news_items:
                 for n in news_items: st.markdown(f"- [{n['title']}]({n['url']})")
         
