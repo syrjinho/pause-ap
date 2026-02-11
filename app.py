@@ -152,7 +152,7 @@ if not api_key:
     st.stop()
 
 # ---------------------------------------------------------
-# 6. 데이터 함수
+# 6. 데이터 함수 (매크로 포함)
 # ---------------------------------------------------------
 def get_price(ticker):
     if not ticker or len(ticker) < 2: return 0.0
@@ -182,6 +182,48 @@ def get_news(ticker):
     except:
         pass
     return news_list
+
+# [NEW] 거시경제 데이터 가져오기
+def get_macro_data():
+    try:
+        # SPY: S&P500(시장추세), ^VIX: 공포지수, ^TNX: 10년물 국채금리
+        tickers = ["SPY", "^VIX", "^TNX"]
+        # yfinance download는 DataFrame을 반환
+        data = yf.download(tickers, period="5d", progress=False)['Close']
+        
+        # 데이터가 비어있는 경우 처리
+        if data.empty: return None
+
+        # 최신 데이터 추출 (마지막 행)
+        last_row = data.iloc[-1]
+        first_row = data.iloc[0]
+        
+        # Multi-index 혹은 Single-index 구조 처리
+        try:
+            spy_price = float(last_row['SPY'])
+            spy_prev = float(first_row['SPY'])
+            vix = float(last_row['^VIX'])
+            tnx = float(last_row['^TNX'])
+        except:
+            # yfinance 버전에 따라 컬럼 접근 방식이 다를 수 있음 (예비책)
+            # data가 이미 ticker가 column인 DataFrame일 경우
+            spy_price = float(last_row.get('SPY', 0))
+            spy_prev = float(first_row.get('SPY', 0))
+            vix = float(last_row.get('^VIX', 0))
+            tnx = float(last_row.get('^TNX', 0))
+
+        spy_change = 0
+        if spy_prev > 0:
+            spy_change = ((spy_price - spy_prev) / spy_prev) * 100
+            
+        return {
+            "spy_price": spy_price,
+            "spy_change_5d": spy_change,
+            "vix": vix,
+            "tnx": tnx
+        }
+    except:
+        return None
 
 def get_data(ticker):
     try:
@@ -245,10 +287,10 @@ with c3:
 st.button("🔍 Analyze (+10 XP)", use_container_width=True, on_click=cb_analyze)
 
 # ---------------------------------------------------------
-# 8. 분석 로직
+# 8. 분석 로직 (매크로 반영)
 # ---------------------------------------------------------
 if st.session_state.analyzed:
-    with st.spinner("Analyzing..."):
+    with st.spinner("Analyzing Market Conditions & Stock..."):
         d = get_data(sym)
         
         if not d:
@@ -266,7 +308,7 @@ if st.session_state.analyzed:
         </div>
         """, unsafe_allow_html=True)
         
-        # 지표 계산
+        # 기술적 지표 계산
         try:
             delta = df['Close'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(14).mean()
@@ -298,23 +340,52 @@ if st.session_state.analyzed:
             news_text = "No specific news found."
 
         # ---------------------------------------------------------
-        # [핵심 수정] AI 프롬프트 강화 (GO 확률 높이기)
+        # [핵심] 매크로 데이터 처리
+        # ---------------------------------------------------------
+        macro = get_macro_data()
+        macro_text = "Macro Data Unavailable"
+        market_condition = "Neutral"
+
+        if macro:
+            # VIX 상태 정의
+            if macro['vix'] > 25: vix_status = "EXTREME FEAR (Danger)"
+            elif macro['vix'] > 20: vix_status = "High Volatility (Caution)"
+            else: vix_status = "Stable (Safe)"
+            
+            # SPY 추세 정의
+            spy_trend = "Uptrend" if macro['spy_change_5d'] > 0 else "Downtrend"
+            
+            macro_text = f"""
+            - S&P 500 (SPY): ${macro['spy_price']:.2f} ({spy_trend}, {macro['spy_change_5d']:.2f}% over 5d)
+            - VIX (Fear Index): {macro['vix']:.2f} -> {vix_status}
+            - 10Y Treasury Yield (^TNX): {macro['tnx']:.2f}%
+            """
+            
+            # 시장 전체 분위기 판단
+            if macro['vix'] > 25 or macro['spy_change_5d'] < -3:
+                market_condition = "BEARISH / CRASH MODE"
+            elif macro['vix'] < 16 and macro['spy_change_5d'] > 0:
+                market_condition = "BULLISH / RALLY MODE"
+            else:
+                market_condition = "CHOPPY / NEUTRAL"
+
+        # ---------------------------------------------------------
+        # AI 프롬프트 (매크로 + 기술적 분석 통합)
         # ---------------------------------------------------------
         sys_msg = """
         You are a highly experienced Swing Trader and Risk Manager at a top hedge fund. 
-        Your job is to analyze technical data and news to find profitable entry points.
+        Your job is to analyze Macro Economics, Technicals, and News to find the perfect entry.
         
         CRITICAL INSTRUCTIONS:
-        1. Be decisive. Do not hedge. If the setup looks good, say "GO".
-        2. "Moderate" risk means you act on standard technical setups (e.g., RSI < 40 + Support bounce).
-        3. "Aggressive" risk means you act on momentum or potential reversals even with higher volatility.
-        4. "Conservative" means you only act on perfect setups.
-        5. DO NOT always say WAIT. If there is a >60% chance of profit based on the data, say GO.
+        1. **MACRO FIRST**: "Don't fight the Fed." If VIX is high (>25) or SPY is crashing, almost ALL stocks should be "WAIT" unless they are defensive or perfect setups.
+        2. Be decisive. "GO" means you would bet your own money.
+        3. "Moderate" risk means you act on standard technical setups (e.g., RSI < 40 + Support bounce) IF the market is stable.
+        4. "Aggressive" risk means you might catch a falling knife if the reward is huge.
+        5. DO NOT always say WAIT. If the Macro is okay and the stock is oversold, say GO.
         
-        Output valid JSON only. format: {"verdict": "GO" or "WAIT", "stop_loss": float, "target": float, "reasoning": ["point1", "point2"]}
+        Output valid JSON only. format: {"verdict": "GO" or "WAIT", "stop_loss": float, "target": float, "reasoning": ["Macro: ...", "Tech: ...", "Conclusion: ..."]}
         """
         
-        # 기술적 지표에 대한 AI의 판단을 돕기 위해 힌트 추가
         rsi_signal = "Neutral"
         if rsi_val < 35: rsi_signal = "Oversold (Buy Signal)"
         elif rsi_val > 65: rsi_signal = "Overbought (Sell Signal)"
@@ -326,25 +397,27 @@ if st.session_state.analyzed:
         user_msg = f"""
         Analyze this stock for a potential Long (Buy) position.
 
-        [Market Data]
+        [1. MACRO ECONOMY CONTEXT] (Check the Weather first)
+        - Market Condition: {market_condition}
+        {macro_text}
+        * If Market Condition is BEARISH, you must be extremely strict.
+
+        [2. INDIVIDUAL STOCK DATA]
         - Ticker: {sym}
         - Current Price: ${curr_price:.2f}
-        - Risk Profile: {risk} (Adjust your aggression accordingly)
+        - Risk Profile: {risk}
         
-        [Technical Indicators]
+        [3. TECHNICAL INDICATORS]
         - RSI (14): {rsi_val:.1f} --> {rsi_signal}
         - Bollinger Bands: Lower ${bbl_val:.2f} / Upper ${bbu_val:.2f}
-        - Price Position vs Bands: {bb_signal}
+        - Price Position: {bb_signal}
         
-        [Recent News Titles]
+        [4. RECENT NEWS]
         {news_text[:1000]}
         
-        [Decision Logic]
-        - IF (RSI is Oversold OR Price near Lower Band) AND (No disastrous news) -> Lean towards "GO".
-        - IF (Price is skyrocketing/Overbought) -> "WAIT".
-        - IF (News is very bad) -> "WAIT".
-        
-        TASK: Provide a final VERDICT (GO or WAIT), set a tight stop_loss, a realistic target, and 3 bullet points of reasoning.
+        TASK:
+        Combine Macro + Technicals.
+        Provide a final VERDICT (GO or WAIT), set a tight stop_loss, a realistic target, and 3 bullet points of reasoning.
         """
         
         try:
@@ -381,7 +454,7 @@ if st.session_state.analyzed:
         m3.metric("Target", f"${final_tp:.2f}")
         
         st.divider()
-        with st.expander("🧐 Why? & Recent News", expanded=True):
+        with st.expander("🧐 Why? (Macro & Tech Analysis)", expanded=True):
             st.markdown(f"**📅 Next Earnings Date:** {d['earnings']}")
             st.markdown("---")
             reasons = ai.get('reasoning', [])
