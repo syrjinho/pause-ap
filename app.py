@@ -159,7 +159,6 @@ def get_price(ticker):
     try: 
         ticker = ticker.strip().upper()
         t = yf.Ticker(ticker)
-        # fast_info 사용 우선
         if hasattr(t, 'fast_info') and t.fast_info.last_price:
              return t.fast_info.last_price
         h = t.history(period='1d')
@@ -256,16 +255,14 @@ def get_data(ticker):
         except:
             earnings = "N/A"
             
-        # [NEW] Top Institutional Holders (Whales)
         whales = []
         try:
             inst = t.institutional_holders
             if inst is not None and not inst.empty:
-                # 보통 'Holder' 컬럼이 기관명
                 if 'Holder' in inst.columns:
                     whales = inst['Holder'].head(3).tolist()
                 else:
-                    whales = inst.iloc[:3, 0].tolist() # 컬럼명 다를 경우 첫번째 컬럼 사용
+                    whales = inst.iloc[:3, 0].tolist()
         except:
             whales = []
 
@@ -275,7 +272,7 @@ def get_data(ticker):
             'name': name,
             'earnings': earnings,
             'fund': fundamentals,
-            'whales': whales # 기관 정보 추가
+            'whales': whales
         }
     except:
         return None
@@ -322,7 +319,7 @@ st.button("🔍 Analyze (+10 XP)", use_container_width=True, on_click=cb_analyze
 # 8. 분석 로직
 # ---------------------------------------------------------
 if st.session_state.analyzed:
-    with st.spinner("Analyzing Market Opportunities & Smart Money..."):
+    with st.spinner("Analyzing Smart Money, Macro, & Technicals..."):
         d = get_data(sym)
         
         if not d:
@@ -333,7 +330,7 @@ if st.session_state.analyzed:
         df = d['hist']
         curr_price = d['price']
         fund = d['fund']
-        whales = d['whales'] # [NEW]
+        whales = d['whales']
         
         st.markdown(f"""
         <div class="company-header">
@@ -359,6 +356,11 @@ if st.session_state.analyzed:
             avg_vol = vol_sma.iloc[-1]
             vol_ratio = (curr_vol / avg_vol) * 100 if avg_vol > 0 else 0
             
+            # [Trend Check] 현재가가 20일선 위에 있는가?
+            trend_sma = sma.iloc[-1] if not pd.isna(sma.iloc[-1]) else curr_price
+            is_uptrend = curr_price > trend_sma
+            trend_str = "Uptrend" if is_uptrend else "Downtrend"
+            
             rsi_val = df['RSI'].iloc[-1] if not pd.isna(df['RSI'].iloc[-1]) else 50
             bbl_val = df['BBL'].iloc[-1] if not pd.isna(df['BBL'].iloc[-1]) else curr_price * 0.95
             bbu_val = df['BBU'].iloc[-1] if not pd.isna(df['BBU'].iloc[-1]) else curr_price * 1.05
@@ -367,6 +369,7 @@ if st.session_state.analyzed:
             bbl_val = curr_price * 0.95
             bbu_val = curr_price * 1.05
             vol_ratio = 100
+            trend_str = "Unknown"
         
         news_items = get_news(sym)
         news_text = "\n".join([f"- {n['title']}" for n in news_items]) if news_items else "No specific news."
@@ -378,15 +381,16 @@ if st.session_state.analyzed:
 
         if macro:
             spy_change_5d = macro['spy_change_5d']
-            if macro['vix'] > 30: vix_status = "EXTREME FEAR (Danger)"
-            elif macro['vix'] > 20: vix_status = "High Volatility (Caution)"
-            else: vix_status = "Stable"
+            # [Logic Fix] VIX 기준을 30에서 25로 다시 강화 (25 이상이면 위험)
+            if macro['vix'] > 25: vix_status = "FEAR (High Risk)"
+            elif macro['vix'] > 18: vix_status = "Volatile (Caution)"
+            else: vix_status = "Stable (Safe)"
             
             spy_trend = "Uptrend" if macro['spy_change_5d'] > 0 else "Downtrend"
             macro_text = f"SPY: ${macro['spy_price']:.2f} ({spy_trend}), VIX: {macro['vix']:.2f} ({vix_status})"
             
-            if macro['vix'] > 30 or macro['spy_change_5d'] < -5: market_condition = "BEARISH"
-            elif macro['vix'] < 20 and macro['spy_change_5d'] > 0: market_condition = "BULLISH"
+            if macro['vix'] > 25 or macro['spy_change_5d'] < -3: market_condition = "BEARISH"
+            elif macro['vix'] < 18 and macro['spy_change_5d'] > 0: market_condition = "BULLISH"
             else: market_condition = "NEUTRAL"
 
         try:
@@ -397,24 +401,33 @@ if st.session_state.analyzed:
         rs_status = "Outperforming" if relative_strength > 0 else "Underperforming"
 
         # ---------------------------------------------------------
-        # AI 프롬프트 (Whale Info 추가)
+        # AI 프롬프트 (Logic: Balanced Sniper)
         # ---------------------------------------------------------
         mk_cap_B = (fund['market_cap'] / 1e9) if fund['market_cap'] else 0.0
         pe_ratio = f"{fund['trailing_pe']:.2f}" if fund['trailing_pe'] else "N/A"
         rev_growth = f"{fund['revenue_growth']*100:.1f}%" if fund['revenue_growth'] else "N/A"
-        profit_margin = f"{fund['profit_margins']*100:.1f}%" if fund['profit_margins'] else "N/A"
         
-        # 기관 보유 정보 문자열 생성
         whale_str = ", ".join(whales) if whales else "No specific data"
 
         sys_msg = """
-        You are a Pragmatic Swing Trader. 
+        You are a Disciplined Swing Trader. 
+        Your goal is High Probability setups. You filter out "Noise".
         
-        LOGIC ADJUSTMENTS:
-        1. **RISK PROFILE MATTERS**: Moderate/Aggressive = Allow imperfections if Trend is strong.
-        2. **GROWTH STOCKS**: High P/E is OKAY if Growth is High.
-        3. **INSTITUTIONAL BACKING**: If top holders are big (Vanguard, Blackrock, Berkshire), consider it a quality stamp.
-        4. **VERDICT**: "GO" unless significant red flags exist.
+        **DECISION LOGIC (The Sniper Method):**
+        
+        1. **GO Criteria (Must meet most):**
+           - **Trend**: Price is above SMA20 (Uptrend) OR deep value reversal.
+           - **Volume**: Recent volume is healthy (>80% avg).
+           - **Relative Strength**: Stock is stronger than SPY.
+           
+        2. **WAIT Criteria (Safety Locks):**
+           - **Market Fear**: VIX > 25 (Unless stock is defensive).
+           - **Overbought**: RSI > 70 (Don't chase).
+           - **Downtrend**: Price < SMA20 AND No Volume (Falling Knife).
+           
+        3. **Risk Profile Adjustments**:
+           - **Moderate/Aggressive**: Can ignore high P/E if Growth is high. Can buy 'Dips' in uptrends.
+           - **Conservative**: Strict Fundamentals required.
         
         Output valid JSON only with keys: 
         {"verdict", "stop_loss", "target", "fund_analysis", "news_analysis", "tech_analysis", "conclusion"}
@@ -423,23 +436,23 @@ if st.session_state.analyzed:
         """
         
         vol_status = "High" if vol_ratio > 120 else "Low" if vol_ratio < 80 else "Normal"
-        rsi_signal = "Oversold (Buy)" if rsi_val < 45 else "Overbought (Sell)" if rsi_val > 70 else "Neutral"
+        rsi_signal = "Oversold (Buy)" if rsi_val < 45 else "Overbought (Sell/Wait)" if rsi_val > 70 else "Neutral"
 
         user_msg = f"""
         Analyze {sym}. Risk Profile: {risk}.
 
-        [1. FUNDAMENTALS]
+        [1. FUNDAMENTALS & WHALES]
         - Market Cap: ${mk_cap_B:.2f} B
         - P/E: {pe_ratio}
         - Rev Growth: {rev_growth}
-        - Profit Margin: {profit_margin}
-        - Top Institutional Holders: {whale_str} (Smart Money)
+        - Top Holders: {whale_str}
 
         [2. MARKET CONTEXT]
         - Condition: {market_condition}
         - {macro_text}
         
         [3. MOMENTUM]
+        - Trend (SMA20): {trend_str} (Critical check)
         - vs SPY: {rs_status} (Stock {stock_5d_change:.1f}% vs SPY {spy_change_5d:.1f}%)
 
         [4. TECHNICALS]
@@ -451,7 +464,10 @@ if st.session_state.analyzed:
         {news_text[:800]}
         
         DECISION:
-        Give a "GO" unless there is a red flag.
+        If Trend is Down and Volume is Low -> WAIT.
+        If RSI > 70 -> WAIT.
+        If VIX > 25 -> WAIT.
+        Otherwise, if setup looks good -> GO.
         """
         
         try:
@@ -490,9 +506,8 @@ if st.session_state.analyzed:
         
         st.divider()
         with st.expander("🧐 Full Analysis Report", expanded=True):
-            # [NEW] Whales Display
             if whales:
-                st.info(f"🐳 **Whale Watch (Top Owners):** {', '.join(whales)}")
+                st.info(f"🐳 **Whale Watch:** {', '.join(whales)}")
             
             st.markdown(f"**🏢 Fundamentals:** P/E {pe_ratio} | Growth {rev_growth}")
             st.markdown(f"**💪 vs Market:** {rs_status} (Stock {stock_5d_change:.1f}% vs SPY {spy_change_5d:.1f}%)")
