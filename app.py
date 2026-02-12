@@ -159,6 +159,7 @@ def get_price(ticker):
     try: 
         ticker = ticker.strip().upper()
         t = yf.Ticker(ticker)
+        # fast_info 사용 우선
         if hasattr(t, 'fast_info') and t.fast_info.last_price:
              return t.fast_info.last_price
         h = t.history(period='1d')
@@ -254,13 +255,27 @@ def get_data(ticker):
                     earnings = datetime.fromtimestamp(ts).strftime('%Y-%m-%d')
         except:
             earnings = "N/A"
+            
+        # [NEW] Top Institutional Holders (Whales)
+        whales = []
+        try:
+            inst = t.institutional_holders
+            if inst is not None and not inst.empty:
+                # 보통 'Holder' 컬럼이 기관명
+                if 'Holder' in inst.columns:
+                    whales = inst['Holder'].head(3).tolist()
+                else:
+                    whales = inst.iloc[:3, 0].tolist() # 컬럼명 다를 경우 첫번째 컬럼 사용
+        except:
+            whales = []
 
         return {
             'hist': h, 
             'price': h['Close'].iloc[-1], 
             'name': name,
             'earnings': earnings,
-            'fund': fundamentals
+            'fund': fundamentals,
+            'whales': whales # 기관 정보 추가
         }
     except:
         return None
@@ -307,7 +322,7 @@ st.button("🔍 Analyze (+10 XP)", use_container_width=True, on_click=cb_analyze
 # 8. 분석 로직
 # ---------------------------------------------------------
 if st.session_state.analyzed:
-    with st.spinner("Analyzing Market Opportunities..."):
+    with st.spinner("Analyzing Market Opportunities & Smart Money..."):
         d = get_data(sym)
         
         if not d:
@@ -318,6 +333,7 @@ if st.session_state.analyzed:
         df = d['hist']
         curr_price = d['price']
         fund = d['fund']
+        whales = d['whales'] # [NEW]
         
         st.markdown(f"""
         <div class="company-header">
@@ -362,7 +378,6 @@ if st.session_state.analyzed:
 
         if macro:
             spy_change_5d = macro['spy_change_5d']
-            # VIX 기준 현실화: 30 이상이어야 위험 (기존 20은 너무 낮음)
             if macro['vix'] > 30: vix_status = "EXTREME FEAR (Danger)"
             elif macro['vix'] > 20: vix_status = "High Volatility (Caution)"
             else: vix_status = "Stable"
@@ -382,28 +397,24 @@ if st.session_state.analyzed:
         rs_status = "Outperforming" if relative_strength > 0 else "Underperforming"
 
         # ---------------------------------------------------------
-        # AI 프롬프트 (핵심: Moderate 성향 튜닝)
+        # AI 프롬프트 (Whale Info 추가)
         # ---------------------------------------------------------
         mk_cap_B = (fund['market_cap'] / 1e9) if fund['market_cap'] else 0.0
         pe_ratio = f"{fund['trailing_pe']:.2f}" if fund['trailing_pe'] else "N/A"
         rev_growth = f"{fund['revenue_growth']*100:.1f}%" if fund['revenue_growth'] else "N/A"
         profit_margin = f"{fund['profit_margins']*100:.1f}%" if fund['profit_margins'] else "N/A"
         
-        # [System Prompt 변경] : 쫄보(Risk Manager) -> 기회주의자(Pragmatic Trader)
+        # 기관 보유 정보 문자열 생성
+        whale_str = ", ".join(whales) if whales else "No specific data"
+
         sys_msg = """
         You are a Pragmatic Swing Trader. 
-        Your goal is to find PROFITABLE setups, not just avoid risk.
         
-        **CRITICAL INSTRUCTIONS FOR 'MODERATE' & 'AGGRESSIVE':**
-        1. **DON'T BE A COWARD**: If the stock is trending up (Price > SMA20) and Volume is decent, say **GO**.
-        2. **IMPERFECTION IS OK**: 
-           - High P/E? Okay if it's a Growth Stock (High Revenue Growth).
-           - Market Choppy? Okay if the stock has Relative Strength.
-        3. **WAIT CONDITIONS (Only specific cases)**:
-           - VIX > 30 (Market Crash).
-           - RSI > 75 (Extreme Overbought).
-           - Active Scandal/Fraud News.
-        4. **DEFAULT BIAS**: If it looks like a standard "Buy the Dip" or "Breakout", say **GO**.
+        LOGIC ADJUSTMENTS:
+        1. **RISK PROFILE MATTERS**: Moderate/Aggressive = Allow imperfections if Trend is strong.
+        2. **GROWTH STOCKS**: High P/E is OKAY if Growth is High.
+        3. **INSTITUTIONAL BACKING**: If top holders are big (Vanguard, Blackrock, Berkshire), consider it a quality stamp.
+        4. **VERDICT**: "GO" unless significant red flags exist.
         
         Output valid JSON only with keys: 
         {"verdict", "stop_loss", "target", "fund_analysis", "news_analysis", "tech_analysis", "conclusion"}
@@ -420,11 +431,12 @@ if st.session_state.analyzed:
         [1. FUNDAMENTALS]
         - Market Cap: ${mk_cap_B:.2f} B
         - P/E: {pe_ratio}
-        - Rev Growth: {rev_growth} (High growth justifies high P/E)
+        - Rev Growth: {rev_growth}
         - Profit Margin: {profit_margin}
+        - Top Institutional Holders: {whale_str} (Smart Money)
 
         [2. MARKET CONTEXT]
-        - Condition: {market_condition} (Don't panic if Neutral)
+        - Condition: {market_condition}
         - {macro_text}
         
         [3. MOMENTUM]
@@ -439,8 +451,7 @@ if st.session_state.analyzed:
         {news_text[:800]}
         
         DECISION:
-        - If Risk is 'Moderate', accept standard setups (e.g. RSI 40-55 + Uptrend).
-        - Give a "GO" unless there is a red flag.
+        Give a "GO" unless there is a red flag.
         """
         
         try:
@@ -459,7 +470,6 @@ if st.session_state.analyzed:
         final_tp = safe_float(ai.get('target'), bbu_val)
         verdict = ai.get('verdict', 'WAIT')
         
-        # 시각적 효과
         color = "#00CC7A" if verdict == "GO" else "#FF4B4B"
         
         st.markdown(f"""
@@ -480,6 +490,10 @@ if st.session_state.analyzed:
         
         st.divider()
         with st.expander("🧐 Full Analysis Report", expanded=True):
+            # [NEW] Whales Display
+            if whales:
+                st.info(f"🐳 **Whale Watch (Top Owners):** {', '.join(whales)}")
+            
             st.markdown(f"**🏢 Fundamentals:** P/E {pe_ratio} | Growth {rev_growth}")
             st.markdown(f"**💪 vs Market:** {rs_status} (Stock {stock_5d_change:.1f}% vs SPY {spy_change_5d:.1f}%)")
             
