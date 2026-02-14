@@ -119,6 +119,17 @@ div.stButton.action-btn > button:hover {
     background-color: #262730;
     color: #00FF99 !important;
 }
+
+/* [NEW] 면책 조항(Disclaimer) 스타일 */
+.disclaimer {
+    text-align: center;
+    font-size: 11px;
+    color: #555;
+    margin-top: 80px;
+    padding-top: 20px;
+    border-top: 1px solid #333;
+    line-height: 1.5;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -377,13 +388,12 @@ with tab_short:
                 final_sl = safe_float(ai.get('stop_loss'), curr_price * 0.98)
                 verdict = ai.get('verdict', 'WAIT')
                 if verdict not in ["GO", "WAIT"]: verdict = "GO" if "GO" in verdict else "WAIT"
+                
                 color = "#00FF99" if verdict == "GO" else "#FF4B4B"
 
-                # [FIX] "NOW" 텍스트 삭제
                 st.markdown(f"""<div class="verdict-box" style="background-color:{color}; color:black;"><h1 style="margin:0;">{verdict}</h1></div>""", unsafe_allow_html=True)
                 
                 st.markdown('<div class="stButton action-btn">', unsafe_allow_html=True)
-                # [FIX] 어떤 결과가 나와도 Check Another Stock 버튼 표시
                 st.button("🔄 Check Another Stock", type="secondary", use_container_width=True, on_click=cb_home, key="reset_s")
                 st.markdown('</div>', unsafe_allow_html=True)
 
@@ -408,6 +418,7 @@ with tab_swing:
     risk = st.selectbox("Risk Profile", ["Conservative", "Moderate", "Aggressive"], index=1)
     
     c1, c2, c3 = st.columns(3)
+    # [FIX] on_change 추가: 엔터키 누르면 cb_analyze_swing 실행
     with c1: sym_w = st.text_input("Ticker", "NVDA", key="t_w", on_change=cb_analyze_swing).strip().upper()
     with c2: qty_w = st.number_input("Qty", 1, value=100, key="q_w")
     with c3:
@@ -475,7 +486,6 @@ with tab_swing:
                 st.markdown(f"""<div class="verdict-box" style="background-color:{color};"><h1 style="color:white; margin:0;">{verdict}</h1></div>""", unsafe_allow_html=True)
                 
                 st.markdown('<div class="stButton action-btn">', unsafe_allow_html=True)
-                # [FIX] Swing 탭에서도 항상 Check Another Stock만 표시
                 st.button("🔄 Check Another Stock", type="secondary", use_container_width=True, on_click=cb_home, key="reset_w_go")
                 st.markdown('</div>', unsafe_allow_html=True)
                 
@@ -498,3 +508,17 @@ with tab_swing:
                 fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
                 fig.update_layout(height=400, margin=dict(l=0,r=0,t=0,b=0))
                 st.plotly_chart(fig, use_container_width=True)
+
+# ---------------------------------------------------------
+# 7. 면책 조항 (Footer)
+# ---------------------------------------------------------
+st.markdown("""
+<div class="disclaimer">
+    <strong>⚠️ DISCLAIMER: NOT FINANCIAL ADVICE</strong><br>
+    The content provided by PAUSE is for informational and educational purposes only. <br>
+    It does not constitute financial, investment, or trading advice. <br>
+    Trading in financial markets involves a high degree of risk and may result in the loss of your entire capital. <br>
+    Always conduct your own due diligence and consult with a certified financial advisor before making any investment decisions. <br>
+    We are not responsible for any losses incurred as a result of using this application.
+</div>
+""", unsafe_allow_html=True)
